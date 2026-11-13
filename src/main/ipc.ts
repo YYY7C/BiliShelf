@@ -450,7 +450,9 @@ export function registerIpc(windowGetter: WindowGetter): void {
     wrap(() => queryRemoteItems(remoteQuerySchema.parse(query ?? {}) as RemoteItemsQuery))
   );
   ipcMain.handle(IPC.sourcesEnqueue, (_e, ids: number[], quality?: string) =>
-    wrap(() => enqueueRemoteItems(idsSchema.parse(ids ?? []), qualitySchema.parse(quality ?? 'compat')))
+    wrap(() =>
+      enqueueRemoteItems(idsSchema.parse(ids ?? []), quality ? qualitySchema.parse(quality) : undefined)
+    )
   );
 
   /* --------------------------------- jobs -------------------------------- */

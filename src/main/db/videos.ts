@@ -516,7 +516,11 @@ export function bulkAction(action: BulkAction): number {
         ids.forEach((id) => run("UPDATE videos SET status = 'present', updated_at = ? WHERE id = ?", [now(), id]));
         return ids.length;
       case 'delete':
-        ids.forEach((id) => run('DELETE FROM videos WHERE id = ?', [id]));
+        ids.forEach((id) => {
+          run('DELETE FROM videos WHERE id = ?', [id]);
+          // 视频行删除后，同步清掉 FTS 索引，避免残留
+          refreshVideoFts(id);
+        });
         return ids.length;
       case 'rate':
         ids.forEach((id) => run('UPDATE videos SET rating = ?, updated_at = ? WHERE id = ?', [action.rating ?? 0, now(), id]));

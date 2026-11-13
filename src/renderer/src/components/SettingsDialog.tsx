@@ -11,7 +11,7 @@ import {
   Terminal,
   Wrench
 } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { AppInfoResponse, AppSettings, AuthStatus, EngineStatus, QualityPreset } from '@shared/types';
 import { api } from '../lib/bridge';
 import { useUi } from '../lib/store';
@@ -54,6 +54,11 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
   const [tab, setTab] = useState<Tab>('library');
   const [local, setLocal] = useState<AppSettings | null>(settings);
   const [busy, setBusy] = useState(false);
+
+  // 父组件异步加载/刷新设置后同步到本地表单，避免弹窗里显示旧值
+  useEffect(() => {
+    if (settings) setLocal(settings);
+  }, [settings]);
 
   const update = async (patch: Partial<AppSettings>) => {
     if (!local) return;

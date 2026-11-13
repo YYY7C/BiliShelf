@@ -60,6 +60,19 @@ Windows 桌面 · 单机单用户 · 离线优先 · 数据全部在本机。
 | 截图里圆角背景“变高/错位” | `capturePage()` 在 Windows 125% 缩放下偶发的合成偏差，不是真实渲染问题 | 视觉验收改用系统级 `PrintWindow` 截图 |
 
 
+## 下载 / 安装
+
+从 [GitHub Releases](https://github.com/YYY7C/bili_sync/releases) 下载：
+
+| 产物 | 说明 |
+| --- | --- |
+| `BiliShelf-<版本>-setup.exe` | NSIS 安装版：可选目录、创建快捷方式，卸载不删素材库 |
+| `BiliShelf-<版本>-portable.exe` | 便携版单文件：双击即用，素材库放在 exe 同级 |
+
+安装包已内置 yt-dlp / ffmpeg / ffprobe，目标机器无需额外安装。未配置代码签名，首次运行 SmartScreen 可能提示，选「仍要运行」即可。
+
+版本变化见 [CHANGELOG.md](CHANGELOG.md)；从源码构建见下文「快速开始」与「打包成 EXE / 便携版」。
+
 ## 快速开始
 
 要求：

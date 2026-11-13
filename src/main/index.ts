@@ -241,6 +241,7 @@ if (!gotLock) {
   });
 
   app.on('before-quit', () => {
+    downloadManager.shutdown();
     closeDatabase();
   });
 }

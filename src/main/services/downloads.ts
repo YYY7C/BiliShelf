@@ -90,6 +90,7 @@ class DownloadManager {
   private listeners = new Set<(jobs: DownloadJob[]) => void>();
   private pumping = false;
   private started = false;
+  private stopping = false;
 
   onChange(listener: (jobs: DownloadJob[]) => void): () => void {
     this.listeners.add(listener);
@@ -227,6 +228,25 @@ class DownloadManager {
     this.emit();
   }
 
+  /** 退出前调用：终止子进程并把运行中的任务标记为暂停，避免留下孤儿 yt-dlp。 */
+  shutdown(): void {
+    this.stopping = true;
+    for (const [id, child] of this.children) {
+      try {
+        child.kill();
+      } catch {
+        // ignore
+      }
+      try {
+        jobsRepo.updateJob(id, { status: 'paused', speed: null, eta: null });
+      } catch {
+        // ignore
+      }
+    }
+    this.children.clear();
+    this.intents.clear();
+  }
+
   private pump(): void {
     if (this.pumping) return;
     this.pumping = true;
@@ -281,6 +301,7 @@ class DownloadManager {
       this.children.set(job.id, child);
       const outcome = await done;
       this.children.delete(job.id);
+      if (this.stopping) return;
 
       const intent = this.intents.get(job.id);
       this.intents.delete(job.id);
@@ -311,6 +332,7 @@ class DownloadManager {
       jobsRepo.markDone(job.id);
       this.emit();
     } catch (error) {
+      if (this.stopping) return;
       const message = error instanceof Error ? error.message : String(error);
       jobsRepo.markFailed(job.id, 'INTERNAL', message);
       log.error('[downloads] job error', job.id, message);
@@ -318,7 +340,7 @@ class DownloadManager {
     } finally {
       await deleteCookiesFile(cookiesFile);
       this.children.delete(job.id);
-      this.pump();
+      if (!this.stopping) this.pump();
     }
   }
 

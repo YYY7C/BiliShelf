@@ -82,6 +82,10 @@ export function SourcesView({
   const [addKind, setAddKind] = useState<'space' | 'collection'>('space');
   const [addUrl, setAddUrl] = useState('');
 
+  useEffect(() => {
+    setQuality(defaultQuality);
+  }, [defaultQuality]);
+
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) ?? null,
     [sources, activeSourceId]

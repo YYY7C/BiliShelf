@@ -313,6 +313,9 @@ export async function rebuildFromDisk(): Promise<{ scanned: number; restored: nu
       const relPath = exists && videoFile ? toLibraryRelative(paths.root, videoFile) : null;
 
       const existing = one<{ id: number }>('SELECT id FROM videos WHERE video_key = ?', [data.videoKey]);
+      const sourceId = data.source?.id
+        ? (one<{ id: number }>('SELECT id FROM sources WHERE id = ?', [data.source.id])?.id ?? null)
+        : null;
       const id = upsertVideo({
         videoKey: data.videoKey,
         origin: data.bvid ? 'bilibili' : 'local',
@@ -323,6 +326,7 @@ export async function rebuildFromDisk(): Promise<{ scanned: number; restored: nu
         upName: data.up?.name ?? null,
         upMid: data.up?.mid ?? null,
         description: data.description ?? null,
+        sourceId,
         filePath: relPath,
         fileSize: stat?.size ?? data.media?.size ?? null,
         duration: data.media?.duration ?? null,
