@@ -1,0 +1,176 @@
+import { BrowserWindow, session } from 'electron';
+import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import log from 'electron-log/main';
+import type { AuthStatus } from '@shared/types';
+import { ensureLibraryDirs, libraryPaths } from '../paths';
+
+const PARTITION = 'persist:bilishelf-bili';
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+
+export function biliSession() {
+  return session.fromPartition(PARTITION);
+}
+
+export function configureBiliSession(): void {
+  const ses = biliSession();
+  ses.setUserAgent(UA);
+  // 只允许 bilibili 系域名使用该会话的窗口；其余导航一律拒绝
+  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+}
+
+function hasSessionCookie(cookies: Electron.Cookie[]): Electron.Cookie | null {
+  return cookies.find((cookie) => cookie.name === 'SESSDATA' && Boolean(cookie.value)) ?? null;
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  const ses = biliSession();
+  const cookies = await ses.cookies.get({ domain: '.bilibili.com' }).catch(() => []);
+  const sessdata = hasSessionCookie(cookies);
+
+  if (!sessdata) {
+    return { loggedIn: false, mid: null, name: null, avatar: null, checkedAt: new Date().toISOString() };
+  }
+
+  try {
+    const response = await ses.fetch('https://api.bilibili.com/x/web-interface/nav', {
+      headers: { Referer: 'https://www.bilibili.com/', 'User-Agent': UA }
+    });
+    const json = (await response.json()) as {
+      code: number;
+      data?: { isLogin?: boolean; mid?: number; uname?: string; face?: string };
+    };
+    if (json.code === 0 && json.data?.isLogin) {
+      return {
+        loggedIn: true,
+        mid: json.data.mid ?? null,
+        name: json.data.uname ?? null,
+        avatar: json.data.face ?? null,
+        checkedAt: new Date().toISOString()
+      };
+    }
+  } catch (error) {
+    log.warn('[auth] nav check failed', error);
+  }
+
+  return {
+    loggedIn: Boolean(sessdata),
+    mid: null,
+    name: null,
+    avatar: null,
+    checkedAt: new Date().toISOString()
+  };
+}
+
+/** 打开登录窗口，轮询到 SESSDATA 出现即视为登录成功。 */
+export async function openLoginWindow(parent: BrowserWindow | null): Promise<AuthStatus> {
+  const ses = biliSession();
+
+  return new Promise<AuthStatus>((resolve) => {
+    const win = new BrowserWindow({
+      width: 520,
+      height: 700,
+      parent: parent ?? undefined,
+      modal: Boolean(parent),
+      show: false,
+      autoHideMenuBar: true,
+      title: '登录 B 站（仅保存在本机）',
+      backgroundColor: '#0b0d12',
+      webPreferences: {
+        partition: PARTITION,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true
+      }
+    });
+
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const finish = async (status: AuthStatus) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearInterval(timer);
+      resolve(status);
+      if (!win.isDestroyed()) win.close();
+    };
+
+    const check = async () => {
+      const cookies = await ses.cookies.get({ domain: '.bilibili.com' }).catch(() => []);
+      if (hasSessionCookie(cookies)) {
+        await new Promise((r) => setTimeout(r, 600));
+        finish(await getAuthStatus());
+      }
+    };
+
+    win.once('ready-to-show', () => win.show());
+    win.on('closed', () => {
+      if (timer) clearInterval(timer);
+      if (!settled) {
+        settled = true;
+        void getAuthStatus().then(resolve);
+      }
+    });
+
+    win.webContents.setWindowOpenHandler(({ url }) => {
+      try {
+        const parsed = new URL(url);
+        const isBili = /(^|\.)bilibili\.com$/i.test(parsed.hostname);
+        if (isBili) void win.loadURL(url);
+      } catch {
+        // ignore malformed url
+      }
+      return { action: 'deny' };
+    });
+
+    void win.loadURL('https://passport.bilibili.com/login');
+    timer = setInterval(() => void check(), 1500);
+  });
+}
+
+export async function logout(): Promise<AuthStatus> {
+  const ses = biliSession();
+  await ses.clearStorageData({ storages: ['cookies'] }).catch(() => undefined);
+  return { loggedIn: false, mid: null, name: null, avatar: null, checkedAt: new Date().toISOString() };
+}
+
+/**
+ * 导出 Netscape 格式 cookies.txt 给 yt-dlp。
+ * 调用方必须在任务结束后删除该文件。
+ */
+export async function exportCookiesFile(): Promise<string | null> {
+  const ses = biliSession();
+  const cookies = await ses.cookies.get({}).catch(() => []);
+  const relevant = cookies.filter((cookie) => {
+    const domain = cookie.domain ?? '';
+    return Boolean(domain) && /bilibili\.com$/i.test(domain.replace(/^\./, ''));
+  });
+  if (relevant.length === 0) return null;
+
+  const paths = ensureLibraryDirs(libraryPaths());
+  const target = path.join(paths.temp, `cookies-${Date.now()}.txt`);
+  const lines = ['# Netscape HTTP Cookie File', '# generated by BiliShelf (temporary)'];
+  for (const cookie of relevant) {
+    const domain = cookie.domain ?? '';
+    if (!domain) continue;
+    const includeSub = domain.startsWith('.') ? 'TRUE' : 'FALSE';
+    const expires = cookie.expirationDate ? Math.floor(cookie.expirationDate) : 0;
+    const secure = cookie.secure ? 'TRUE' : 'FALSE';
+    lines.push(
+      [domain, includeSub, cookie.path || '/', secure, String(expires), cookie.name, cookie.value].join('\t')
+    );
+  }
+  await fsp.writeFile(target, `${lines.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+  return target;
+}
+
+export async function deleteCookiesFile(file: string | null): Promise<void> {
+  if (!file) return;
+  try {
+    if (fs.existsSync(file)) await fsp.unlink(file);
+  } catch {
+    // ignore
+  }
+}

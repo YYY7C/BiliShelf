@@ -1,0 +1,21 @@
+node_modules/
+out/
+release/
+dist/
+*.log
+.DS_Store
+.vscode/
+*.tsbuildinfo
+/tmp/
+
+# 本地素材库（默认与启动目录同级）
+library.db
+library.db-wal
+library.db-shm
+media/
+cache/
+backups/
+logs/
+
+# 内置引擎（约 265MB，用 scripts/prepare-engines.ps1 重新获取）
+resources/bin/

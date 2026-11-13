@@ -1,0 +1,163 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-ink: #0b0d12;
+  --color-surface: #0f1219;
+  --color-panel: #141821;
+  --color-panel2: #181d28;
+  --color-panel3: #1d2431;
+  --color-line: #262e3d;
+  --color-line2: #1d2431;
+  --color-fg: #e8ebf2;
+  --color-muted: #9aa4b7;
+  --color-dim: #6f7a8e;
+  --color-pink: #fb7299;
+  --color-blue: #00aeec;
+  --color-green: #3ddc97;
+  --color-yellow: #f5b544;
+  --color-red: #ff6b6b;
+  --color-purple: #a78bfa;
+
+  --font-sans:
+    'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Segoe UI', system-ui, -apple-system,
+    sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+
+  --radius-card: 14px;
+}
+
+:root[data-theme='light'] {
+  --color-ink: #f5f6fa;
+  --color-surface: #eef1f7;
+  --color-panel: #ffffff;
+  --color-panel2: #f7f8fc;
+  --color-panel3: #e9edf5;
+  --color-line: #dbe0ea;
+  --color-line2: #e8ecf4;
+  --color-fg: #1a2030;
+  --color-muted: #5c667c;
+  --color-dim: #8b94a8;
+}
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+  }
+
+  body {
+    background-color: var(--color-ink);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: 13.5px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-pink) 35%, transparent);
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  a {
+    color: var(--color-blue);
+    text-decoration: none;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  :focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-blue) 70%, transparent);
+    outline-offset: 1px;
+  }
+}
+
+@layer utilities {
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+
+  .scroll-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 99px;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--color-line) 70%, var(--color-muted));
+  }
+
+  .scroll-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .drag-region {
+    -webkit-app-region: drag;
+  }
+
+  .no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .grid-noise {
+    background-image:
+      radial-gradient(900px 420px at 12% -10%, color-mix(in srgb, var(--color-pink) 12%, transparent), transparent 65%),
+      radial-gradient(800px 400px at 92% 0%, color-mix(in srgb, var(--color-blue) 10%, transparent), transparent 60%);
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* 播放器容器：让 Artplayer 撑满并保持 16:9 内的黑底 */
+.art-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+
+.art-host .art-video-player {
+  width: 100%;
+  height: 100%;
+}
+
+.danmaku-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.danmaku-layer canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
