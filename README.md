@@ -62,7 +62,7 @@ Windows 桌面 · 单机单用户 · 离线优先 · 数据全部在本机。
 
 ## 下载 / 安装
 
-从 [GitHub Releases](https://github.com/YYY7C/bili_sync/releases) 下载：
+从 [GitHub Releases](https://github.com/YYY7C/BiliShelf/releases) 下载：
 
 | 产物 | 说明 |
 | --- | --- |
