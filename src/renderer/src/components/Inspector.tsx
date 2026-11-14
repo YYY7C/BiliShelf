@@ -53,7 +53,7 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
 
   if (!item) {
     return (
-      <aside className="flex h-full w-[292px] flex-none flex-col border-l border-line2 bg-panel/50">
+      <aside className="relative z-10 flex h-full w-[292px] flex-none flex-col border-l border-line2 bg-panel/50">
         <div className="flex h-12 items-center justify-between border-b border-line2 px-3">
           <span className="text-[12px] font-medium text-muted">检查器</span>
         </div>
@@ -141,7 +141,7 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
   };
 
   return (
-    <aside className="flex h-full w-[292px] flex-none flex-col border-l border-line2 bg-panel/50">
+    <aside className="relative z-10 flex h-full w-[292px] flex-none flex-col border-l border-line2 bg-panel/50">
       <div className="flex h-12 flex-none items-center justify-between border-b border-line2 px-3">
         <span className="text-[12px] font-medium text-muted">检查器</span>
         <IconButton label="关闭检查器" onClick={onClose}>

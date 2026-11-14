@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import { z } from 'zod';
 import log from 'electron-log/main';
 import type {
@@ -119,6 +119,7 @@ function showOpen(options: Electron.OpenDialogOptions): Promise<Electron.OpenDia
 const idSchema = z.number().int().positive();
 const idsSchema = z.array(idSchema).max(5000);
 const toolSchema = z.enum(['ytdlp', 'ffmpeg', 'ffprobe']);
+const themeSchema = z.enum(['dark', 'light']);
 
 const libraryQuerySchema = z.object({
   search: z.string().max(200).optional(),
@@ -181,6 +182,13 @@ export function registerIpc(windowGetter: WindowGetter): void {
     wrap(async () => {
       const paths = ensureLibraryDirs(libraryPaths());
       await shell.openPath(paths.logs);
+    })
+  );
+  ipcMain.handle(IPC.appSetTheme, (_e, theme: string) =>
+    wrap(() => {
+      const next = themeSchema.parse(theme);
+      nativeTheme.themeSource = next;
+      getWindow()?.setBackgroundColor(next === 'dark' ? '#0b0d12' : '#f5f6fa');
     })
   );
 

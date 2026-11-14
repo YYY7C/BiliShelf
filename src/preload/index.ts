@@ -22,6 +22,7 @@ import type {
   SourceSummary,
   SyncProgress,
   TagSummary,
+  ThemeMode,
   ToastEvent,
   ToolKind,
   UpdateVideoPatch,
@@ -41,7 +42,8 @@ const api: BilishelfApi = {
     info: () => ipcRenderer.invoke(IPC.appInfo),
     openExternal: (url: string) => ipcRenderer.invoke(IPC.appOpenExternal, url),
     showInFolder: (fullPath: string) => ipcRenderer.invoke(IPC.appShowInFolder, fullPath),
-    openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs)
+    openLogs: () => ipcRenderer.invoke(IPC.appOpenLogs),
+    setTheme: (theme: ThemeMode) => ipcRenderer.invoke(IPC.appSetTheme, theme)
   },
   settings: {
     get: () => ipcRenderer.invoke(IPC.settingsGet),

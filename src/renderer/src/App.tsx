@@ -15,6 +15,7 @@ import type {
 import { api, isDemo } from './lib/bridge';
 import { useUi } from './lib/store';
 import { Inspector } from './components/Inspector';
+import { FocusBackdrop } from './components/FocusBackdrop';
 import { QualityUpgradeModal } from './components/QualityUpgradeModal';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
@@ -133,7 +134,22 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('bilishelf-theme', theme);
+    void api.app.setTheme(theme);
   }, [theme]);
+
+  // 外观参数实时写入 CSS 变量，设置面板拖动滑杆即可预览
+  useEffect(() => {
+    const root = document.documentElement;
+    const blur = settings?.coverBackdropBlur ?? 6;
+    const opacity = (settings?.coverBackdropOpacity ?? 82) / 100;
+    const dim = (settings?.coverBackdropDim ?? 55) / 100;
+    const sidebarTransparent = settings?.sidebarTransparent !== false;
+    root.style.setProperty('--cover-backdrop-blur', `${blur}px`);
+    root.style.setProperty('--cover-backdrop-opacity', String(opacity));
+    root.style.setProperty('--cover-veil-opacity', String(dim));
+    root.style.setProperty('--sidebar-alpha', sidebarTransparent ? '20%' : '60%');
+    root.style.setProperty('--sidebar-blur', sidebarTransparent ? '12px' : '0px');
+  }, [settings]);
 
   useEffect(() => {
     return () => {
@@ -412,7 +428,10 @@ export default function App() {
   }, [openPlayer, playerId, selection, selectedId, view, trashSelection]);
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-ink text-fg">
+    <div className="relative flex h-full w-full overflow-hidden bg-ink text-fg">
+      <FocusBackdrop
+        item={view === 'library' && settings?.coverBackdrop !== false ? selectedItem : null}
+      />
       <Sidebar
         view={view}
         onView={setView}
@@ -431,7 +450,7 @@ export default function App() {
           setView('sources');
         }}
       />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative z-10 flex min-w-0 flex-1 flex-col">
         <TopBar
           total={total}
           loading={loading}
@@ -557,6 +576,7 @@ export default function App() {
           auth={auth}
           engines={engines}
           onClose={() => setSettingsOpen(false)}
+          onPreview={(patch) => setSettings((prev) => (prev ? { ...prev, ...patch } : prev))}
           onReload={() => {
             void (async () => {
               const [nextSettings, nextAuth, nextInfo] = await Promise.all([

@@ -161,3 +161,65 @@
   width: 100% !important;
   height: 100% !important;
 }
+
+/* 选中视频时的封面虚化背景 */
+.focus-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--color-ink);
+}
+
+.focus-backdrop img {
+  position: absolute;
+  inset: -3%;
+  width: 106%;
+  height: 106%;
+  object-fit: cover;
+  opacity: var(--cover-backdrop-opacity, 0.82);
+  filter: blur(var(--cover-backdrop-blur, 6px)) saturate(1.1);
+  animation: focus-backdrop-in 500ms ease-out;
+  will-change: opacity;
+}
+
+.focus-backdrop-veil {
+  position: absolute;
+  inset: 0;
+  opacity: var(--cover-veil-opacity, 0.55);
+  background:
+    radial-gradient(
+      130% 100% at 50% 0%,
+      transparent 0%,
+      color-mix(in srgb, var(--color-ink) 22%, transparent) 62%,
+      color-mix(in srgb, var(--color-ink) 82%, transparent) 100%
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--color-ink) 8%, transparent),
+      color-mix(in srgb, var(--color-ink) 48%, transparent)
+    );
+}
+
+:root[data-theme='light'] .focus-backdrop img {
+  opacity: calc(var(--cover-backdrop-opacity, 0.82) * 0.8);
+}
+
+.sidebar-glass {
+  background: color-mix(in srgb, var(--color-panel) var(--sidebar-alpha, 20%), transparent);
+  -webkit-backdrop-filter: blur(var(--sidebar-blur, 12px));
+  backdrop-filter: blur(var(--sidebar-blur, 12px));
+}
+
+@keyframes focus-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-backdrop img {
+    animation: none;
+  }
+}

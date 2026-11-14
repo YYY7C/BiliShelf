@@ -51,6 +51,11 @@ export function defaultSettings(): AppSettings {
     autoTagUp: true,
     autoTagZone: true,
     generatePreview: true,
+    coverBackdrop: true,
+    coverBackdropBlur: 6,
+    coverBackdropOpacity: 82,
+    coverBackdropDim: 55,
+    sidebarTransparent: true,
     ytdlpPath: '',
     ffmpegPath: '',
     requestDelayMs: 600
@@ -111,6 +116,17 @@ function sanitize(input: AppSettings): AppSettings {
     autoTagUp: input.autoTagUp !== false,
     autoTagZone: input.autoTagZone !== false,
     generatePreview: input.generatePreview !== false,
+    coverBackdrop: input.coverBackdrop !== false,
+    coverBackdropBlur: Number.isFinite(input.coverBackdropBlur)
+      ? Math.min(30, Math.max(0, Math.round(input.coverBackdropBlur)))
+      : 6,
+    coverBackdropOpacity: Number.isFinite(input.coverBackdropOpacity)
+      ? Math.min(100, Math.max(20, Math.round(input.coverBackdropOpacity)))
+      : 82,
+    coverBackdropDim: Number.isFinite(input.coverBackdropDim)
+      ? Math.min(100, Math.max(0, Math.round(input.coverBackdropDim)))
+      : 55,
+    sidebarTransparent: input.sidebarTransparent !== false,
     ytdlpPath: String(input.ytdlpPath || '').trim(),
     ffmpegPath: String(input.ffmpegPath || '').trim(),
     requestDelayMs: delay

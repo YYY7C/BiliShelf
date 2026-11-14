@@ -15,7 +15,7 @@ import {
   Terminal,
   Wrench
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   AppInfoResponse,
   AppSettings,
@@ -35,13 +35,15 @@ interface SettingsDialogProps {
   engines: EngineStatus | null;
   onClose: () => void;
   onReload: () => void;
+  onPreview?: (patch: Partial<AppSettings>) => void;
 }
 
-type Tab = 'library' | 'download' | 'engine' | 'account' | 'about';
+type Tab = 'library' | 'download' | 'appearance' | 'engine' | 'account' | 'about';
 
 const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'library', label: '素材库' },
   { key: 'download', label: '下载' },
+  { key: 'appearance', label: '外观' },
   { key: 'engine', label: '引擎' },
   { key: 'account', label: '账号' },
   { key: 'about', label: '关于' }
@@ -60,15 +62,25 @@ const TOOL_LABEL: Record<string, string> = {
   ffprobe: 'ffprobe（媒体探测）'
 };
 
-export function SettingsDialog({ info, settings, auth, engines, onClose, onReload }: SettingsDialogProps) {
+export function SettingsDialog({ info, settings, auth, engines, onClose, onReload, onPreview }: SettingsDialogProps) {
   const pushToast = useUi((state) => state.pushToast);
   const [tab, setTab] = useState<Tab>('library');
   const [local, setLocal] = useState<AppSettings | null>(settings);
   const [busy, setBusy] = useState(false);
   const [maintenance, setMaintenance] = useState<MaintenanceProgress | null>(null);
+  const persistTimer = useRef<number | null>(null);
+  const pendingAppearance = useRef<Partial<AppSettings>>({});
 
   useEffect(() => {
     return api.maintenance.onProgress((progress) => setMaintenance(progress));
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (persistTimer.current) window.clearTimeout(persistTimer.current);
+      const pending = pendingAppearance.current;
+      if (Object.keys(pending).length > 0) void api.settings.update(pending);
+    };
   }, []);
 
   // 父组件异步加载/刷新设置后同步到本地表单，避免弹窗里显示旧值
@@ -86,6 +98,35 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
     } catch (error) {
       pushToast('error', (error as Error).message);
     }
+  };
+
+  /** 外观滑杆先本地预览，停止拖动 350ms 后再落盘，避免频繁写配置。 */
+  const previewAppearance = (patch: Partial<AppSettings>) => {
+    setLocal((prev) => (prev ? { ...prev, ...patch } : prev));
+    onPreview?.(patch);
+    pendingAppearance.current = { ...pendingAppearance.current, ...patch };
+    if (persistTimer.current) window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => {
+      persistTimer.current = null;
+      const next = pendingAppearance.current;
+      pendingAppearance.current = {};
+      void update(next);
+    }, 350);
+  };
+
+  const resetAppearance = () => {
+    if (persistTimer.current) {
+      window.clearTimeout(persistTimer.current);
+      persistTimer.current = null;
+    }
+    pendingAppearance.current = {};
+    void update({
+      coverBackdrop: true,
+      coverBackdropBlur: 6,
+      coverBackdropOpacity: 82,
+      coverBackdropDim: 55,
+      sidebarTransparent: true
+    });
   };
 
   const relocate = async (target?: string) => {
@@ -206,7 +247,7 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
 
   return (
     <Modal title="设置" subtitle="所有配置保存在本机；不包含任何云端同步" onClose={onClose} width="max-w-4xl">
-      <div className="flex gap-5">
+      <div className="flex h-[min(560px,62vh)] gap-5">
         <nav className="w-32 flex-none">
           {TABS.map((item) => (
             <button
@@ -223,7 +264,7 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
           ))}
         </nav>
 
-        <div className="min-w-0 flex-1">
+        <div className="scroll-thin min-w-0 flex-1 overflow-y-auto pr-1">
           {tab === 'library' ? (
             <div className="space-y-4">
               <Field
@@ -422,6 +463,74 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                   label="生成悬停预览"
                   hint="下载完成后生成 4 秒静音预览片，卡片悬停时播放；每个约 200–500KB。"
                 />
+              </div>
+            </div>
+          ) : null}
+
+          {tab === 'appearance' ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-1">
+                <Toggle
+                  checked={local?.coverBackdrop ?? true}
+                  onChange={(next) => void update({ coverBackdrop: next })}
+                  label="选中视频时显示封面背景"
+                  hint="使用本地原始封面等比铺满窗口，仅做轻微虚化。"
+                />
+                <div className="h-px bg-line2" />
+                <Toggle
+                  checked={local?.sidebarTransparent ?? true}
+                  onChange={(next) => void update({ sidebarTransparent: next })}
+                  label="透明侧边栏"
+                  hint="关闭后侧边栏恢复为较实的底色，减少背景干扰。"
+                />
+              </div>
+
+              <Field label="背景虚化" hint={`当前 ${local?.coverBackdropBlur ?? 6}px，数值越小封面越清晰。`}>
+                <input
+                  type="range"
+                  min={0}
+                  max={30}
+                  step={1}
+                  value={local?.coverBackdropBlur ?? 6}
+                  onChange={(event) => previewAppearance({ coverBackdropBlur: Number(event.target.value) })}
+                  className="w-full accent-pink"
+                />
+              </Field>
+
+              <Field
+                label="背景不透明度"
+                hint={`当前 ${local?.coverBackdropOpacity ?? 82}%，越高封面越明显。`}
+              >
+                <input
+                  type="range"
+                  min={20}
+                  max={100}
+                  step={1}
+                  value={local?.coverBackdropOpacity ?? 82}
+                  onChange={(event) => previewAppearance({ coverBackdropOpacity: Number(event.target.value) })}
+                  className="w-full accent-pink"
+                />
+              </Field>
+
+              <Field label="背景暗化" hint={`当前 ${local?.coverBackdropDim ?? 55}%，越高背景越暗、文字越清晰。`}>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={local?.coverBackdropDim ?? 55}
+                  onChange={(event) => previewAppearance({ coverBackdropDim: Number(event.target.value) })}
+                  className="w-full accent-pink"
+                />
+              </Field>
+
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-line/70 bg-panel2/40 px-3 py-2">
+                <p className="text-[11px] leading-4 text-dim">
+                  外观设置只影响本机界面，不会修改素材库文件；调整后立即生效。
+                </p>
+                <Button variant="ghost" size="sm" className="flex-none" onClick={resetAppearance}>
+                  恢复默认
+                </Button>
               </div>
             </div>
           ) : null}

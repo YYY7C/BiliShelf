@@ -89,6 +89,7 @@ function makeVideos(): VideoItem[] {
       description: '这是一条演示数据，用于在没有登录/没有下载的情况下预览素材库界面。',
       coverUrl: null,
       thumbUrl: svgCover(title, gradient[0], gradient[1]),
+      localCoverUrl: svgCover(title, gradient[0], gradient[1]),
       videoUrl: null,
       previewUrl: null,
       subtitleUrl: null,
@@ -301,6 +302,11 @@ const demoSettings: AppSettings = {
   autoTagUp: true,
   autoTagZone: true,
   generatePreview: true,
+  coverBackdrop: true,
+  coverBackdropBlur: 6,
+  coverBackdropOpacity: 82,
+  coverBackdropDim: 55,
+  sidebarTransparent: true,
   ytdlpPath: '',
   ffmpegPath: '',
   requestDelayMs: 600
@@ -359,7 +365,7 @@ export const demoApi: BilishelfApi = {
   app: {
     info: () =>
       delay({
-        version: '0.2.1-demo',
+        version: '0.2.2-demo',
         electron: '—',
         chrome: '—',
         node: '—',
@@ -378,11 +384,15 @@ export const demoApi: BilishelfApi = {
       }),
     openExternal: async () => undefined,
     showInFolder: async () => undefined,
-    openLogs: async () => undefined
+    openLogs: async () => undefined,
+    setTheme: async () => undefined
   },
   settings: {
     get: () => delay({ ...demoSettings }),
-    update: (patch) => delay({ ...demoSettings, ...patch }),
+    update: (patch) => {
+      Object.assign(demoSettings, patch);
+      return delay({ ...demoSettings });
+    },
     chooseLibraryRoot: () => delay(null),
     relocate: () => delay(demoSettings.libraryRoot)
   },

@@ -26,6 +26,7 @@ import type {
   TagSummary,
   ToastEvent,
   ToolKind,
+  ThemeMode,
   UpdateVideoPatch,
   VideoItem
 } from './types';
@@ -36,6 +37,7 @@ export const IPC = {
   appOpenExternal: 'app:open-external',
   appShowInFolder: 'app:show-in-folder',
   appOpenLogs: 'app:open-logs',
+  appSetTheme: 'app:set-theme',
 
   settingsGet: 'settings:get',
   settingsUpdate: 'settings:update',
@@ -130,6 +132,7 @@ export interface BilishelfApi {
     openExternal(url: string): Promise<void>;
     showInFolder(fullPath: string): Promise<void>;
     openLogs(): Promise<void>;
+    setTheme(theme: ThemeMode): Promise<void>;
   };
   settings: {
     get(): Promise<AppSettings>;

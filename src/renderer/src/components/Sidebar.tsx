@@ -124,14 +124,14 @@ export function Sidebar({
     view === 'library' && !facetActive && filters.status === status;
 
   return (
-    <aside className="flex h-full w-[236px] flex-none flex-col border-r border-line2 bg-panel/60">
+    <aside className="sidebar-glass relative z-10 flex h-full w-[236px] flex-none flex-col border-r border-line2">
       <div className="flex items-center gap-2.5 px-4 pb-3 pt-4">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-pink to-blue text-[15px] font-black text-white shadow-lg shadow-pink/20">
           B
         </div>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold leading-4 text-fg">BiliShelf</div>
-          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.2.1'}</div>
+          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.2.2'}</div>
         </div>
       </div>
 

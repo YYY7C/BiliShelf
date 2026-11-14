@@ -47,6 +47,8 @@ export interface VideoItem {
   coverUrl: string | null;
   /** 本地封面/缩略图的 bilishelf:// 地址 */
   thumbUrl: string | null;
+  /** 本地原始封面的 bilishelf:// 地址（没有封面时为 null） */
+  localCoverUrl: string | null;
   videoUrl: string | null;
   previewUrl: string | null;
   subtitleUrl: string | null;
@@ -280,6 +282,8 @@ export interface AuthStatus {
   checkedAt: string | null;
 }
 
+export type ThemeMode = 'dark' | 'light';
+
 export interface AppSettings {
   libraryRoot: string;
   defaultQuality: QualityPreset;
@@ -289,6 +293,16 @@ export interface AppSettings {
   autoTagUp: boolean;
   autoTagZone: boolean;
   generatePreview: boolean;
+  /** 选中视频时显示本地封面虚化背景 */
+  coverBackdrop: boolean;
+  /** 背景虚化半径（px） */
+  coverBackdropBlur: number;
+  /** 背景不透明度（0-100） */
+  coverBackdropOpacity: number;
+  /** 背景暗化强度（0-100） */
+  coverBackdropDim: number;
+  /** 侧边栏透明玻璃效果 */
+  sidebarTransparent: boolean;
   ytdlpPath: string;
   ffmpegPath: string;
   requestDelayMs: number;

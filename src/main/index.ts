@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, shell } from 'electron';
+import { app, BrowserWindow, nativeTheme, session, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import log from 'electron-log/main';
@@ -148,6 +148,9 @@ if (!gotLock) {
     configureBiliSession();
     registerAppProtocol();
     installContentSecurityPolicy();
+
+    // 原生标题栏跟随应用主题；默认深色，渲染进程加载后会同步用户选择
+    nativeTheme.themeSource = 'dark';
 
     mainWindow = createWindow();
     registerIpc(() => mainWindow);

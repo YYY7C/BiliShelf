@@ -117,6 +117,7 @@ function decorate(rows: VideoRow[]): VideoItem[] {
       description: row.description,
       coverUrl: row.cover_url,
       thumbUrl: types?.has('thumb') ? `bilishelf://asset/${row.id}/thumb` : types?.has('cover') ? `bilishelf://asset/${row.id}/cover` : null,
+      localCoverUrl: types?.has('cover') ? `bilishelf://asset/${row.id}/cover` : null,
       videoUrl: hasVideo ? `bilishelf://media/${row.id}` : null,
       previewUrl: types?.has('preview') ? `bilishelf://asset/${row.id}/preview` : null,
       subtitleUrl: types?.has('subtitle') ? `bilishelf://asset/${row.id}/subtitle` : null,

@@ -1,6 +1,6 @@
 {
   "name": "bilishelf",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "本地 B 站收藏夹素材库：选择性同步、标签整理、内置播放",
   "author": "BiliShelf",
