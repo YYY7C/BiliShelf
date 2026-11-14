@@ -6,7 +6,7 @@ Windows 桌面 · 单机单用户 · 离线优先 · 数据全部在本机。
 
 当前版本：**0.2.0**（2026-11-14）
 
-![素材库预览](docs/preview-library.png)
+![素材库预览（v0.2.0）](docs/preview-library.png)
 
 ---
 
