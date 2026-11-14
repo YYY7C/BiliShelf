@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { AlertTriangle, CheckCircle2, Play, Star, Volume2, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Play, Star, StickyNote, XCircle } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { VideoItem } from '@shared/types';
 import { formatBytes, formatDuration, resolutionLabel, shorten } from '../lib/format';
@@ -215,6 +215,11 @@ export function VideoCard({ item, layout, active, selected, onSelect, onOpen }: 
         </div>
         <div className="mt-1 flex items-center gap-1.5 text-[10.5px] text-dim">
           <span className="min-w-0 flex-1 truncate">{item.upName ?? '本地文件'}</span>
+          {item.note ? (
+            <span className="flex-none text-yellow/80" title={shorten(item.note, 200)}>
+              <StickyNote size={10} />
+            </span>
+          ) : null}
           {item.fileSize ? <span className="font-mono">{formatBytes(item.fileSize)}</span> : null}
         </div>
         {item.tags.length > 0 ? (
@@ -235,15 +240,6 @@ export function VideoCard({ item, layout, active, selected, onSelect, onOpen }: 
         ) : null}
       </div>
 
-      {item.note ? (
-        <span
-          title={shorten(item.note, 200)}
-          className="absolute right-1.5 top-1.5 hidden items-center gap-1 rounded bg-black/60 px-1 py-0.5 text-[9.5px] text-white/70"
-        >
-          <Volume2 size={9} />
-          备注
-        </span>
-      ) : null}
     </div>
   );
 }

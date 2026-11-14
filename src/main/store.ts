@@ -50,6 +50,7 @@ export function defaultSettings(): AppSettings {
     autoTagSource: true,
     autoTagUp: true,
     autoTagZone: true,
+    generatePreview: true,
     ytdlpPath: '',
     ffmpegPath: '',
     requestDelayMs: 600
@@ -109,6 +110,7 @@ function sanitize(input: AppSettings): AppSettings {
     autoTagSource: input.autoTagSource !== false,
     autoTagUp: input.autoTagUp !== false,
     autoTagZone: input.autoTagZone !== false,
+    generatePreview: input.generatePreview !== false,
     ytdlpPath: String(input.ytdlpPath || '').trim(),
     ffmpegPath: String(input.ffmpegPath || '').trim(),
     requestDelayMs: delay

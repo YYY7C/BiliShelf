@@ -5,17 +5,22 @@ import type {
   AppSettings,
   AuthStatus,
   BulkAction,
-  DownloadJob,
   FolderSummary,
+  ImportProgress,
+  JobsSnapshot,
   LibraryQuery,
   LibraryResult,
   LibraryStats,
+  MaintenanceProgress,
+  MaintenanceResult,
   QualityPreset,
   RemoteItemsQuery,
   RemoteItemsResult,
   SmartCollection,
   SourceKind,
+  SourcePatch,
   SourceSummary,
+  SyncProgress,
   TagSummary,
   ToastEvent,
   ToolKind,
@@ -83,20 +88,38 @@ const api: BilishelfApi = {
     list: (): Promise<SourceSummary[]> => ipcRenderer.invoke(IPC.sourcesList),
     add: (input: { kind: SourceKind; url?: string; remoteId?: string; title?: string }) =>
       ipcRenderer.invoke(IPC.sourcesAdd, input),
+    update: (id: number, patch: SourcePatch) => ipcRenderer.invoke(IPC.sourcesUpdate, id, patch),
     remove: (id: number) => ipcRenderer.invoke(IPC.sourcesRemove, id),
     sync: (id: number) => ipcRenderer.invoke(IPC.sourcesSync, id),
     syncAll: () => ipcRenderer.invoke(IPC.sourcesSyncAll),
     items: (query: RemoteItemsQuery): Promise<RemoteItemsResult> => ipcRenderer.invoke(IPC.sourcesItems, query),
     enqueue: (remoteItemIds: number[], quality?: QualityPreset) =>
-      ipcRenderer.invoke(IPC.sourcesEnqueue, remoteItemIds, quality)
+      ipcRenderer.invoke(IPC.sourcesEnqueue, remoteItemIds, quality),
+    enqueueAll: (input: { sourceId?: number | null; quality?: QualityPreset }) =>
+      ipcRenderer.invoke(IPC.sourcesEnqueueAll, input),
+    enqueuePreview: (input: { sourceId?: number | null }) =>
+      ipcRenderer.invoke(IPC.sourcesEnqueuePreview, input),
+    cancelSync: () => ipcRenderer.invoke(IPC.sourcesCancelSync)
   },
   jobs: {
-    list: (): Promise<DownloadJob[]> => ipcRenderer.invoke(IPC.jobsList),
+    list: (): Promise<JobsSnapshot> => ipcRenderer.invoke(IPC.jobsList),
     pause: (id: number) => ipcRenderer.invoke(IPC.jobsPause, id),
     resume: (id: number) => ipcRenderer.invoke(IPC.jobsResume, id),
     cancel: (id: number) => ipcRenderer.invoke(IPC.jobsCancel, id),
     retry: (id: number) => ipcRenderer.invoke(IPC.jobsRetry, id),
     clear: () => ipcRenderer.invoke(IPC.jobsClear)
+  },
+  quality: {
+    scan: () => ipcRenderer.invoke(IPC.qualityScan),
+    enqueue: (videoIds: number[]) => ipcRenderer.invoke(IPC.qualityEnqueue, videoIds),
+    onProgress: (cb) => subscribe(IPC.qualityProgress, cb)
+  },
+  maintenance: {
+    backfill: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceBackfill),
+    previews: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenancePreviews),
+    covers: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceCovers),
+    cleanup: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceCleanup),
+    onProgress: (cb: (progress: MaintenanceProgress) => void) => subscribe(IPC.eventMaintenance, cb)
   },
   engine: {
     status: () => ipcRenderer.invoke(IPC.engineStatus),
@@ -113,11 +136,13 @@ const api: BilishelfApi = {
     progress: (id: number, position: number) => ipcRenderer.invoke(IPC.playerProgress, id, position)
   },
   events: {
-    onJobs: (cb: (jobs: DownloadJob[]) => void) => subscribe(IPC.eventJobs, cb),
+    onJobs: (cb: (snapshot: JobsSnapshot) => void) => subscribe(IPC.eventJobs, cb),
     onLibrary: (cb: () => void) => subscribe(IPC.eventLibrary, cb),
     onSources: (cb: () => void) => subscribe(IPC.eventSources, cb),
     onToast: (cb: (toast: ToastEvent) => void) => subscribe(IPC.eventToast, cb),
-    onAuth: (cb: (status: AuthStatus) => void) => subscribe(IPC.eventAuth, cb)
+    onAuth: (cb: (status: AuthStatus) => void) => subscribe(IPC.eventAuth, cb),
+    onImportProgress: (cb: (progress: ImportProgress) => void) => subscribe(IPC.eventImportProgress, cb),
+    onSyncProgress: (cb: (progress: SyncProgress) => void) => subscribe(IPC.eventSyncProgress, cb)
   }
 };
 

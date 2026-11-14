@@ -18,6 +18,16 @@ export interface RunResult {
 
 let db: DB | null = null;
 let activeRoot = '';
+const statements = new Map<string, ReturnType<DB['prepare']>>();
+
+function prepare(sql: string): ReturnType<DB['prepare']> {
+  let statement = statements.get(sql);
+  if (!statement) {
+    statement = getDb().prepare(sql);
+    statements.set(sql, statement);
+  }
+  return statement;
+}
 
 function toNumber(value: number | bigint): number {
   return typeof value === 'bigint' ? Number(value) : value;
@@ -27,6 +37,7 @@ export function openDatabase(rootOverride?: string): DB {
   const paths = ensureLibraryDirs(libraryPaths(rootOverride));
   if (db && activeRoot === paths.root) return db;
   if (db) closeDatabase();
+  statements.clear();
 
   const instance = new DatabaseSync(paths.db);
   instance.exec('PRAGMA journal_mode = WAL;');
@@ -58,6 +69,7 @@ export function closeDatabase(): void {
   }
   db = null;
   activeRoot = '';
+  statements.clear();
 }
 
 export function currentLibraryRoot(): string {
@@ -95,7 +107,7 @@ function migrate(instance: DB): void {
   }
 }
 
-/** 整库备份到 backups/，用于迁移失败/用户手动备份。 */
+/** 整库备份到 backups/，用于迁移失败/用户手动备份。保留最近 20 份。 */
 export function backupDatabase(tag = 'manual'): string | null {
   const instance = getDb();
   const paths = libraryPaths();
@@ -104,6 +116,7 @@ export function backupDatabase(tag = 'manual'): string | null {
   try {
     fs.mkdirSync(paths.backups, { recursive: true });
     instance.exec(`VACUUM INTO '${target.replace(/'/g, "''")}';`);
+    pruneBackups(paths.backups, 20);
     return target;
   } catch (error) {
     log.error('[db] backup failed', error);
@@ -111,21 +124,36 @@ export function backupDatabase(tag = 'manual'): string | null {
   }
 }
 
+function pruneBackups(dir: string, keep: number): void {
+  try {
+    const files = fs
+      .readdirSync(dir)
+      .filter((name) => /^library-.*\.db$/.test(name))
+      .map((name) => {
+        const full = path.join(dir, name);
+        return { full, mtime: fs.statSync(full).mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime);
+    for (const file of files.slice(keep)) {
+      fs.rmSync(file.full, { force: true });
+    }
+  } catch (error) {
+    log.warn('[db] prune backups failed', error);
+  }
+}
+
 export type Row = Record<string, unknown>;
 
 export function all<T = Row>(sql: string, params: unknown[] = []): T[] {
-  const statement = getDb().prepare(sql);
-  return statement.all(...(params as never[])) as T[];
+  return prepare(sql).all(...(params as never[])) as T[];
 }
 
 export function one<T = Row>(sql: string, params: unknown[] = []): T | undefined {
-  const statement = getDb().prepare(sql);
-  return statement.get(...(params as never[])) as T | undefined;
+  return prepare(sql).get(...(params as never[])) as T | undefined;
 }
 
 export function run(sql: string, params: unknown[] = []): RunResult {
-  const statement = getDb().prepare(sql);
-  const result = statement.run(...(params as never[])) as { changes: number | bigint; lastInsertRowid: number | bigint };
+  const result = prepare(sql).run(...(params as never[])) as { changes: number | bigint; lastInsertRowid: number | bigint };
   return {
     changes: toNumber(result.changes ?? 0),
     lastInsertRowid: toNumber(result.lastInsertRowid ?? 0)

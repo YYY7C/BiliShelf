@@ -1,17 +1,20 @@
 import clsx from 'clsx';
 import {
   ArrowDownWideNarrow,
-  Download,
   FolderPlus,
   LayoutGrid,
   List,
   PanelRight,
   RefreshCw,
+  Moon,
   RotateCcw,
   Search,
   Settings,
+  Star,
+  Sun,
   Tag,
   Trash2,
+  TrendingUp,
   X
 } from 'lucide-react';
 import type { SortKey } from '@shared/types';
@@ -28,7 +31,7 @@ const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
 ];
 
 const STATUS_LABEL: Record<string, string> = {
-  present: '仅可播放',
+  present: '可播放',
   missing: '文件缺失',
   unavailable: '源已失效',
   trashed: '回收站',
@@ -53,6 +56,7 @@ interface TopBarProps {
   grid: boolean;
   onToggleGrid: () => void;
   onRefresh: () => void;
+  onQualityUpgrade: () => void;
   onImportFiles: () => void;
   onImportFolder: () => void;
   onBulkTag: () => void;
@@ -62,6 +66,8 @@ interface TopBarProps {
   onBulkRestore: () => void;
   onBulkDelete: () => void;
   onClearSelection: () => void;
+  theme: 'dark' | 'light';
+  onToggleTheme: () => void;
 }
 
 export function TopBar({
@@ -71,6 +77,7 @@ export function TopBar({
   grid,
   onToggleGrid,
   onRefresh,
+  onQualityUpgrade,
   onImportFiles,
   onImportFolder,
   onBulkTag,
@@ -79,7 +86,9 @@ export function TopBar({
   onBulkTrash,
   onBulkRestore,
   onBulkDelete,
-  onClearSelection
+  onClearSelection,
+  theme,
+  onToggleTheme
 }: TopBarProps) {
   const filters = useUi((state) => state.filters);
   const patchFilters = useUi((state) => state.patchFilters);
@@ -91,14 +100,14 @@ export function TopBar({
 
   const selectedCount = selection.length;
   const hasFilter =
-    filters.status !== 'all' ||
+    !['all', 'present'].includes(filters.status) ||
     Boolean(filters.tag) ||
     Boolean(filters.folder) ||
     Boolean(filters.sourceId) ||
     Boolean(filters.search.trim());
 
   const clearAllFilters = () =>
-    patchFilters({ status: 'all', tag: null, folder: null, sourceId: null, search: '' });
+    patchFilters({ status: 'present', tag: null, folder: null, sourceId: null, search: '' });
 
   return (
     <header className="flex-none border-b border-line2 bg-panel/40">
@@ -108,6 +117,7 @@ export function TopBar({
             <div className="relative min-w-0 flex-1">
               <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-dim" />
               <input
+                id="library-search"
                 value={filters.search}
                 onChange={(event) => patchFilters({ search: event.target.value })}
                 placeholder="搜索标题、UP 主、标签、备注…"
@@ -182,6 +192,9 @@ export function TopBar({
               <PanelRight size={15} />
             </IconButton>
           ) : null}
+          <IconButton label="检查画质升级" onClick={onQualityUpgrade}>
+            <TrendingUp size={15} />
+          </IconButton>
           <IconButton label="刷新" onClick={onRefresh}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} />
           </IconButton>
@@ -196,6 +209,9 @@ export function TopBar({
               </Button>
             </>
           ) : null}
+          <IconButton label={theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'} onClick={onToggleTheme}>
+            {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+          </IconButton>
           <IconButton label="设置" onClick={() => setSettingsOpen(true)}>
             <Settings size={15} />
           </IconButton>
@@ -205,10 +221,10 @@ export function TopBar({
       {view === 'library' && hasFilter ? (
         <div className="flex h-9 items-center gap-1.5 border-t border-line2 bg-panel2/30 px-3">
           <span className="text-[11px] text-dim">筛选</span>
-          {filters.status !== 'all' ? (
+          {!['all', 'present'].includes(filters.status) ? (
             <FilterChip
               label={`状态：${STATUS_LABEL[filters.status] ?? filters.status}`}
-              onClear={() => patchFilters({ status: 'all' })}
+              onClear={() => patchFilters({ status: 'present' })}
             />
           ) : null}
           {filters.tag ? <FilterChip label={`标签：${filters.tag}`} onClear={() => patchFilters({ tag: null })} /> : null}
@@ -243,7 +259,7 @@ export function TopBar({
               移入文件夹
             </Button>
             <Button size="sm" variant="subtle" onClick={onBulkRate}>
-              <Download size={12} />
+              <Star size={12} />
               评分
             </Button>
             <Button size="sm" variant="subtle" onClick={onBulkRestore}>

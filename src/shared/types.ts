@@ -104,6 +104,7 @@ export interface SourceSummary {
   kind: SourceKind;
   remoteId: string;
   title: string;
+  /** 列表展示用封面：优先最新条目的本地缓存（bilishelf://cover/<id>），其次远程地址 */
   cover: string | null;
   ownerMid: number | null;
   itemCount: number;
@@ -112,6 +113,11 @@ export interface SourceSummary {
   lastSyncedAt: string | null;
   syncEnabled: boolean;
   note: string | null;
+}
+
+export interface SourcePatch {
+  syncEnabled?: boolean;
+  note?: string | null;
 }
 
 export interface RemoteItem {
@@ -131,6 +137,12 @@ export interface RemoteItem {
   tags: string[];
   downloadedVideoId: number | null;
   jobStatus: JobStatus | null;
+  /** 已下载文件的格式信息，未下载时为 null */
+  width: number | null;
+  height: number | null;
+  vcodec: string | null;
+  fileSize: number | null;
+  qualityLabel: string | null;
 }
 
 export interface RemoteItemsQuery {
@@ -160,6 +172,7 @@ export interface DownloadJob {
   speed: number | null;
   eta: number | null;
   quality: QualityPreset;
+  upgradeVideoId: number | null;
   errorCode: string | null;
   errorMessage: string | null;
   attempts: number;
@@ -176,6 +189,47 @@ export interface EnqueueInput {
   sourceId?: number | null;
   remoteItemId?: number | null;
   quality?: QualityPreset;
+  upgradeVideoId?: number | null;
+}
+
+export interface QualityCandidate {
+  videoId: number;
+  bvid: string;
+  title: string;
+  sourceId: number | null;
+  sourceName: string | null;
+  currentHeight: number | null;
+  currentBitrate: number | null;
+  availableHeight: number;
+  availableBitrate: number | null;
+  reason: 'resolution' | 'bitrate';
+}
+
+export interface QualityScanResult {
+  scanned: number;
+  failed: number;
+  remaining: number;
+  candidates: QualityCandidate[];
+}
+
+export interface QualityScanProgress {
+  scanned: number;
+  total: number;
+  title: string;
+}
+
+export interface JobsSnapshot {
+  items: DownloadJob[];
+  total: number;
+}
+
+export interface SyncProgress {
+  scope: 'source' | 'all';
+  sourceId: number | null;
+  title: string;
+  index: number;
+  total: number;
+  items: number;
 }
 
 export interface TagSummary {
@@ -234,6 +288,7 @@ export interface AppSettings {
   autoTagSource: boolean;
   autoTagUp: boolean;
   autoTagZone: boolean;
+  generatePreview: boolean;
   ytdlpPath: string;
   ffmpegPath: string;
   requestDelayMs: number;
@@ -275,6 +330,29 @@ export interface ImportResult {
   skipped: number;
   failed: number;
   errors: string[];
+}
+
+export interface ImportProgress {
+  done: number;
+  total: number;
+  current: string;
+}
+
+export type MaintenancePhase = 'metadata' | 'previews' | 'covers' | 'cleanup';
+
+export interface MaintenanceProgress {
+  phase: MaintenancePhase;
+  done: number;
+  total: number;
+  title: string;
+}
+
+export interface MaintenanceResult {
+  total: number;
+  updated: number;
+  failed: number;
+  bytesFreed: number;
+  details: string;
 }
 
 export interface AppInfoResponse extends AppInfo {

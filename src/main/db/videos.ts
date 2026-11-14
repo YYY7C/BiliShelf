@@ -8,7 +8,10 @@ import type {
   VideoItem,
   VideoStatus
 } from '@shared/types';
+import { videoKeyFor } from '@shared/media';
 import { all, getDb, one, run, tx } from './index';
+
+export { videoKeyFor };
 
 interface VideoRow {
   id: number;
@@ -31,6 +34,7 @@ interface VideoRow {
   height: number | null;
   vcodec: string | null;
   acodec: string | null;
+  bitrate: number | null;
   quality_label: string | null;
   status: VideoStatus;
   rating: number;
@@ -55,10 +59,6 @@ const SELECT_BASE = `
 
 function now(): string {
   return new Date().toISOString();
-}
-
-export function videoKeyFor(bvid: string, cid: number | null | undefined, page: number): string {
-  return `bv:${bvid}:${cid ?? 0}:${page}`;
 }
 
 /** 一行视频 + 关联 assets/tags/folders -> 渲染层投影 */
@@ -309,7 +309,9 @@ export function upsertVideo(input: InsertVideoInput): number {
     const downloadedAt = input.status === 'present' ? timestamp : null;
     run(
       `UPDATE videos SET
-        title = ?, up_name = COALESCE(?, up_name), up_mid = COALESCE(?, up_mid),
+        title = ?,
+        bvid = COALESCE(NULLIF(?, ''), bvid), cid = COALESCE(?, cid), page = ?,
+        up_name = COALESCE(?, up_name), up_mid = COALESCE(?, up_mid),
         description = COALESCE(?, description), cover_url = COALESCE(?, cover_url),
         source_id = COALESCE(?, source_id), remote_item_id = COALESCE(?, remote_item_id),
         file_path = COALESCE(?, file_path), file_size = COALESCE(?, file_size),
@@ -323,6 +325,9 @@ export function upsertVideo(input: InsertVideoInput): number {
       WHERE id = ?`,
       [
         input.title,
+        input.bvid ?? '',
+        input.cid ?? null,
+        input.page ?? 1,
         input.upName ?? null,
         input.upMid ?? null,
         input.description ?? null,
@@ -494,6 +499,10 @@ export function getAsset(videoId: number, type: string): { path: string; mime: s
   return row ?? null;
 }
 
+export function listAssets(videoId: number): Array<{ type: string; path: string }> {
+  return all<{ type: string; path: string }>('SELECT type, path FROM assets WHERE video_id = ?', [videoId]);
+}
+
 export function recordPlayback(id: number, position: number): void {
   run('UPDATE videos SET play_position = ?, played_at = ?, updated_at = ? WHERE id = ?', [
     Math.max(0, position),
@@ -606,14 +615,16 @@ export function refreshVideoFts(id: number): void {
     [id]
   );
 
-  const db = getDb();
-  const del = db.prepare('DELETE FROM videos_fts WHERE rowid = ?');
-  const ins = db.prepare(
-    'INSERT INTO videos_fts (rowid, title, up_name, description, tags_text, note) VALUES (?,?,?,?,?,?)'
-  );
-  del.run(id);
+  run('DELETE FROM videos_fts WHERE rowid = ?', [id]);
   if (row) {
-    ins.run(id, row.title ?? '', row.up_name ?? '', row.description ?? '', row.tags_text ?? '', row.note ?? '');
+    run('INSERT INTO videos_fts (rowid, title, up_name, description, tags_text, note) VALUES (?,?,?,?,?,?)', [
+      id,
+      row.title ?? '',
+      row.up_name ?? '',
+      row.description ?? '',
+      row.tags_text ?? '',
+      row.note ?? ''
+    ]);
   }
 }
 

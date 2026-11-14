@@ -1,4 +1,4 @@
-import { net } from 'electron';
+import { nativeImage, net } from 'electron';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -8,6 +8,8 @@ import { ensureLibraryDirs, fromLibraryRelative, libraryPaths, toLibraryRelative
 
 const CONCURRENCY = 4;
 const MAX_PER_RUN = 200;
+const COVER_WIDTH = 640;
+const COVER_QUALITY = 82;
 
 interface CoverRow {
   id: number;
@@ -15,27 +17,28 @@ interface CoverRow {
   cover_url: string;
 }
 
-function extensionFor(contentType: string | null, url: string): string {
-  const type = (contentType ?? '').toLowerCase();
-  if (type.includes('png')) return '.png';
-  if (type.includes('webp')) return '.webp';
-  if (type.includes('avif')) return '.avif';
-  if (type.includes('jpeg') || type.includes('jpg')) return '.jpg';
-  const ext = path.extname(new URL(url).pathname).toLowerCase();
-  return ['.jpg', '.jpeg', '.png', '.webp', '.avif'].includes(ext) ? ext : '.jpg';
+/** 清单页最大只显示 ~96px，缓存 640px 已经足够；原图会额外占用数倍磁盘。 */
+function toThumbnail(buffer: Buffer): Buffer {
+  try {
+    const image = nativeImage.createFromBuffer(buffer);
+    if (image.isEmpty()) return buffer;
+    const { width } = image.getSize();
+    const resized = width > COVER_WIDTH ? image.resize({ width: COVER_WIDTH, quality: 'good' }) : image;
+    return resized.toJPEG(COVER_QUALITY);
+  } catch {
+    return buffer;
+  }
 }
 
 async function fetchCover(row: CoverRow, dir: string, root: string): Promise<boolean> {
   try {
-    const response = await net.fetch(row.cover_url, {
-      headers: { Referer: 'https://www.bilibili.com/' }
-    });
+    const response = await net.fetch(row.cover_url, { headers: { Referer: 'https://www.bilibili.com/' } });
     if (!response.ok) return false;
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.byteLength < 512) return false;
 
-    const file = path.join(dir, `${row.bvid || `item-${row.id}`}${extensionFor(response.headers.get('content-type'), row.cover_url)}`);
-    await fsp.writeFile(file, buffer);
+    const file = path.join(dir, `${row.bvid || `item-${row.id}`}.jpg`);
+    await fsp.writeFile(file, toThumbnail(buffer));
     run('UPDATE remote_items SET local_cover = ? WHERE id = ?', [toLibraryRelative(root, file), row.id]);
     return true;
   } catch (error) {
@@ -76,6 +79,57 @@ export async function cacheRemoteCovers(sourceId?: number): Promise<number> {
 
   if (done > 0) log.info('[covers] cached', done, 'of', rows.length);
   return done;
+}
+
+/**
+ * 把已有封面重新压成 640px JPEG，并修正扩展名。
+ * 用于升级前的旧缓存（原图平均 ~600KB）。
+ */
+export async function recompressCovers(
+  onProgress?: (done: number, total: number) => void
+): Promise<{ total: number; compressed: number; savedBytes: number }> {
+  const paths = ensureLibraryDirs(libraryPaths());
+  const rows = all<{ id: number; local_cover: string }>(
+    'SELECT id, local_cover FROM remote_items WHERE local_cover IS NOT NULL'
+  );
+  // 同一 bvid 在多个收藏夹里会共用同一张封面文件，按文件去重后再更新所有引用行
+  const groups = new Map<string, number[]>();
+  for (const row of rows) {
+    const ids = groups.get(row.local_cover) ?? [];
+    ids.push(row.id);
+    groups.set(row.local_cover, ids);
+  }
+
+  let compressed = 0;
+  let savedBytes = 0;
+  let index = 0;
+  for (const [relative, ids] of groups) {
+    index += 1;
+    onProgress?.(index, groups.size);
+    const absolute = fromLibraryRelative(paths.root, relative);
+    try {
+      if (!fs.existsSync(absolute)) continue;
+      const before = fs.statSync(absolute).size;
+      const buffer = await fsp.readFile(absolute);
+      const next = toThumbnail(buffer);
+      const target = absolute.replace(/\.[^.]+$/, '') + '.jpg';
+      if (target === absolute && next.length >= before) continue;
+      await fsp.writeFile(target, next);
+      if (target !== absolute) await fsp.rm(absolute, { force: true }).catch(() => undefined);
+      const after = fs.statSync(target).size;
+      if (target !== absolute) {
+        const nextRelative = toLibraryRelative(paths.root, target);
+        run('UPDATE remote_items SET local_cover = ? WHERE local_cover = ?', [nextRelative, relative]);
+      }
+      compressed += ids.length;
+      savedBytes += Math.max(0, before - after);
+    } catch (error) {
+      log.debug('[covers] recompress failed', relative, (error as Error).message);
+    }
+  }
+
+  if (compressed > 0) log.info('[covers] recompressed', compressed, 'saved', savedBytes);
+  return { total: rows.length, compressed, savedBytes };
 }
 
 export function getRemoteCoverPath(id: number): string | null {

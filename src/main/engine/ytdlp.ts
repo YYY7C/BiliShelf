@@ -2,8 +2,11 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import log from 'electron-log/main';
+import { formatSelector } from '@shared/ytdlp';
 import type { QualityPreset } from '@shared/types';
 import { requireTool } from './tools';
+
+export { formatSelector };
 
 export interface DownloadProgress {
   downloaded: number;
@@ -16,6 +19,7 @@ export interface DownloadOptions {
   url: string;
   outputDir: string;
   quality: QualityPreset;
+  preferHighestBitrate?: boolean;
   cookiesFile?: string | null;
   onProgress?: (progress: DownloadProgress) => void;
   onLog?: (line: string) => void;
@@ -27,22 +31,6 @@ export interface DownloadOutcome {
   canceled: boolean;
 }
 
-export function formatSelector(quality: QualityPreset): string {
-  switch (quality) {
-    case '720':
-      return 'bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/bv*[height<=720]+ba/b[height<=720]/b';
-    case 'best':
-      // 最高可用：4K/8K/高帧率都参与选择，分辨率优先
-      return 'bv*+ba/b';
-    case 'audio':
-      return 'ba/b';
-    case 'compat':
-    case 'custom':
-    default:
-      return 'bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[height<=1080]+ba/b[height<=1080]/b';
-  }
-}
-
 const PROGRESS_PREFIX = 'BS_PROGRESS|';
 
 /**
@@ -51,6 +39,77 @@ const PROGRESS_PREFIX = 'BS_PROGRESS|';
  */
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+
+export interface FormatProbe {
+  height: number | null;
+  width: number | null;
+  tbr: number | null;
+  vcodec: string | null;
+  fps: number | null;
+}
+
+/** 只解析元数据，不下载；用于画质升级检查。 */
+export function probeFormats(url: string, cookiesFile?: string | null): Promise<FormatProbe[]> {
+  const tool = requireTool('ytdlp');
+  const args = [
+    '--no-warnings',
+    '--no-playlist',
+    '--skip-download',
+    '--dump-single-json',
+    '--user-agent',
+    BROWSER_UA
+  ];
+  if (cookiesFile) args.push('--cookies', cookiesFile);
+  args.push('--', url);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(tool.path!, args, { windowsHide: true });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('画质探测超时'));
+    }, 30000);
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ') || `yt-dlp 退出码 ${code}`));
+        return;
+      }
+      try {
+        const json = JSON.parse(stdout.replace(/^\uFEFF/, '')) as { formats?: Array<Record<string, unknown>> };
+        const formats = (json.formats ?? [])
+          .map((format) => ({
+            height: typeof format.height === 'number' ? format.height : null,
+            width: typeof format.width === 'number' ? format.width : null,
+            tbr:
+              typeof format.tbr === 'number'
+                ? format.tbr
+                : typeof format.vbr === 'number'
+                  ? format.vbr
+                  : null,
+            vcodec: typeof format.vcodec === 'string' ? format.vcodec : null,
+            fps: typeof format.fps === 'number' ? format.fps : null
+          }))
+          .filter((format) => format.vcodec && format.vcodec !== 'none' && (format.height ?? 0) > 0);
+        resolve(formats);
+      } catch {
+        reject(new Error('解析 yt-dlp 输出失败'));
+      }
+    });
+  });
+}
 
 function buildArgs(options: DownloadOptions): string[] {
   const args: string[] = [
@@ -91,9 +150,9 @@ function buildArgs(options: DownloadOptions): string[] {
     args.push('--merge-output-format', 'mp4/mkv');
   }
 
-  // 最高画质：先按分辨率/帧率取最高，同规格下优先 H.264（兼容性更好）
+  // 最高画质：先按分辨率/帧率取最高；普通下载同规格优先 H.264，画质升级则取最高码率
   if (options.quality === 'best') {
-    args.push('-S', 'res,fps,vcodec:h264,br');
+    args.push('-S', options.preferHighestBitrate ? 'res,fps,br' : 'res,fps,vcodec:h264,br');
   }
 
   if (options.cookiesFile) {

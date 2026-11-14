@@ -1,6 +1,6 @@
 import log from 'electron-log/main';
-import type { QualityPreset, SourceKind, SourceSummary } from '@shared/types';
-import { all, one, run } from '../db/index';
+import type { QualityPreset, SourceKind, SourceSummary, SyncProgress } from '@shared/types';
+import { all, tx } from '../db/index';
 import {
   addSource,
   applyRemoteItems,
@@ -17,7 +17,6 @@ import { getAuthStatus, exportCookiesFile, deleteCookiesFile } from './auth';
 import { isUnavailableMedia, listFavoriteFolders, listFavoriteItems, listWatchLater } from './biliApi';
 import { listFlatPlaylist } from '../engine/ytdlp';
 import { videoKeyFor } from '../db/videos';
-import { findActiveJob } from '../db/jobs';
 
 function isoFromEpoch(seconds?: number | null): string | null {
   if (!seconds || !Number.isFinite(seconds)) return null;
@@ -87,8 +86,7 @@ export async function addSources(input: {
     throw new Error('不支持的来源类型');
   }
 
-  // 新增来源默认参与“同步全部”
-  run('UPDATE sources SET sync_enabled = 1 WHERE sync_enabled = 0');
+  // 新来源在 addSource 里默认 sync_enabled = 1，不会影响已关闭的来源
   return listSources();
 }
 
@@ -103,6 +101,10 @@ interface SyncResult {
   unavailable: number;
 }
 
+export interface SyncOptions {
+  onProgress?: (progress: SyncProgress) => void;
+}
+
 function mergeResults(results: SyncResult[]): SyncResult {
   return results.reduce<SyncResult>(
     (acc, item) => ({
@@ -114,16 +116,49 @@ function mergeResults(results: SyncResult[]): SyncResult {
   );
 }
 
-export async function syncSource(sourceId: number): Promise<SyncResult> {
+let syncCanceled = false;
+
+export function cancelSync(): void {
+  syncCanceled = true;
+}
+
+function checkCanceled(): void {
+  if (syncCanceled) throw new Error('已取消同步');
+}
+
+interface ProgressBase {
+  scope: 'source' | 'all';
+  index: number;
+  total: number;
+}
+
+async function syncSourceInternal(
+  sourceId: number,
+  options: SyncOptions,
+  progressBase: ProgressBase
+): Promise<SyncResult> {
   const source = getSource(sourceId);
   if (!source) throw new Error('来源不存在');
+
+  const emit = (items: number) =>
+    options.onProgress?.({
+      scope: progressBase.scope,
+      sourceId,
+      title: source.title,
+      index: progressBase.index,
+      total: progressBase.total,
+      items
+    });
 
   const runId = startSyncRun(sourceId);
   try {
     let seeds: RemoteSeed[] = [];
 
     if (source.kind === 'favorite') {
-      const items = await listFavoriteItems(Number(source.remote_id));
+      const items = await listFavoriteItems(Number(source.remote_id), 200, {
+        onPage: emit,
+        shouldCancel: () => syncCanceled
+      });
       seeds = items.map((item) => ({
         bvid: item.bvid,
         cid: null,
@@ -138,6 +173,7 @@ export async function syncSource(sourceId: number): Promise<SyncResult> {
         state: isUnavailableMedia(item) ? 'unavailable' : 'available'
       }));
     } else if (source.kind === 'watch_later') {
+      emit(0);
       const items = await listWatchLater();
       seeds = items.map((item) => ({
         bvid: item.bvid,
@@ -153,6 +189,7 @@ export async function syncSource(sourceId: number): Promise<SyncResult> {
         state: 'available'
       }));
     } else if (source.kind === 'space' || source.kind === 'collection') {
+      emit(0);
       const cookiesFile = await exportCookiesFile();
       try {
         const entries = await listFlatPlaylist(source.remote_id, cookiesFile);
@@ -179,9 +216,11 @@ export async function syncSource(sourceId: number): Promise<SyncResult> {
       throw new Error('该来源不需要同步');
     }
 
+    checkCanceled();
     const stats = applyRemoteItems(sourceId, seeds);
     touchSourceSync(sourceId);
     finishSyncRun(runId, 'ok', { ...stats, scanned: seeds.length });
+    emit(seeds.length);
     log.info('[sources] synced', sourceId, stats);
     return stats;
   } catch (error) {
@@ -191,61 +230,157 @@ export async function syncSource(sourceId: number): Promise<SyncResult> {
   }
 }
 
-export async function syncAllSources(): Promise<SyncResult> {
+export async function syncSource(sourceId: number, options: SyncOptions = {}): Promise<SyncResult> {
+  syncCanceled = false;
+  return syncSourceInternal(sourceId, options, { scope: 'source', index: 1, total: 1 });
+}
+
+export async function syncAllSources(options: SyncOptions = {}): Promise<SyncResult & { failed: number }> {
+  syncCanceled = false;
   const rows = all<{ id: number; last_synced_at: string | null }>(
     'SELECT id, last_synced_at FROM sources WHERE sync_enabled = 1'
   );
   const results: SyncResult[] = [];
   const errors: string[] = [];
 
-  for (const row of rows) {
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    checkCanceled();
     try {
-      results.push(await syncSource(row.id));
+      results.push(
+        await syncSourceInternal(row.id, options, { scope: 'all', index: index + 1, total: rows.length })
+      );
     } catch (error) {
-      errors.push(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === '已取消同步') throw error;
+      errors.push(message);
     }
   }
 
   if (results.length === 0 && errors.length > 0) throw new Error(errors[0]);
-  return mergeResults(results);
+  return { ...mergeResults(results), failed: errors.length };
 }
 
-export async function enqueueRemoteItems(
+/* ------------------------------- enqueue -------------------------------- */
+
+interface EnqueueRow {
+  id: number;
+  source_id: number;
+  bvid: string;
+  cid: number | null;
+  page: number;
+  title: string;
+  state: string;
+}
+
+function placeholders(count: number): string {
+  return Array.from({ length: count }, () => '?').join(',');
+}
+
+/**
+ * 把清单条目加入下载队列。
+ * 这里一次性预取视频/任务状态，避免 4000 条时产生上万次单行查询。
+ */
+export function enqueueRemoteItems(
   remoteItemIds: number[],
-  quality?: QualityPreset
-): Promise<{ queued: number; skipped: number }> {
+  quality?: QualityPreset,
+  options: { defer?: boolean } = {}
+): { queued: number; skipped: number } {
+  const ids = Array.from(new Set(remoteItemIds.filter((id) => Number.isFinite(id) && id > 0)));
+  if (ids.length === 0) return { queued: 0, skipped: 0 };
+
+  const rows = all<EnqueueRow>(
+    `SELECT id, source_id, bvid, cid, page, title, state FROM remote_items WHERE id IN (${placeholders(ids.length)})`,
+    ids
+  );
+  const candidates = rows.filter((row) => row.state !== 'unavailable');
+  if (candidates.length === 0) return { queued: 0, skipped: rows.length };
+
+  const keys = candidates.map((row) => videoKeyFor(row.bvid, row.page));
+  const present = new Set(
+    all<{ video_key: string }>(
+      `SELECT video_key FROM videos WHERE video_key IN (${placeholders(keys.length)}) AND status IN ('present','trashed')`,
+      keys
+    ).map((row) => row.video_key)
+  );
+
   const inputs = [];
-  for (const id of remoteItemIds) {
-    const item = one<{
-      id: number;
-      source_id: number;
-      bvid: string;
-      cid: number | null;
-      page: number;
-      title: string;
-      state: string;
-    }>('SELECT id, source_id, bvid, cid, page, title, state FROM remote_items WHERE id = ?', [id]);
-    if (!item) continue;
-    if (item.state === 'unavailable') continue;
-
-    const key = videoKeyFor(item.bvid, item.cid, item.page);
-    const existing = one<{ id: number }>(
-      "SELECT id FROM videos WHERE video_key = ? AND status = 'present'",
-      [key]
-    );
-    if (existing) continue;
-    if (findActiveJob(key)) continue;
-
+  for (const row of candidates) {
+    const key = videoKeyFor(row.bvid, row.page);
+    if (present.has(key)) continue;
     inputs.push({
-      bvid: item.bvid,
-      cid: item.cid,
-      page: item.page,
-      title: item.title,
-      sourceId: item.source_id,
-      remoteItemId: item.id,
+      bvid: row.bvid,
+      cid: row.cid,
+      page: row.page,
+      title: row.title,
+      sourceId: row.source_id,
+      remoteItemId: row.id,
       quality
     });
   }
 
-  return downloadManager.enqueue(inputs);
+  const result = downloadManager.enqueue(inputs, { defer: options.defer });
+  return { queued: result.queued, skipped: result.skipped + (rows.length - candidates.length) };
+}
+
+function buildEnqueueWhere(options: { sourceId?: number | null }): { where: string[]; params: unknown[] } {
+  const where = ["r.state <> 'unavailable'"];
+  const params: unknown[] = [];
+  if (options.sourceId != null) {
+    where.push('r.source_id = ?');
+    params.push(options.sourceId);
+  } else {
+    where.push("s.kind = 'favorite'");
+  }
+  // 收藏夹条目的 cid 为 NULL，不能用 COALESCE(v.cid,0) 比较（回填后 v.cid 会变成真实值）；
+  // 只有清单条目本身带 cid 时才要求 cid 匹配。
+  where.push(`NOT EXISTS (
+    SELECT 1 FROM videos v
+     WHERE v.bvid = r.bvid AND v.page = r.page
+       AND (r.cid IS NULL OR v.cid = r.cid)
+       AND v.status IN ('present', 'trashed')
+  )`);
+  where.push(`NOT EXISTS (
+    SELECT 1 FROM download_jobs j
+     WHERE j.bvid = r.bvid AND j.page = r.page
+       AND (r.cid IS NULL OR j.cid = r.cid)
+       AND j.status IN ('queued', 'resolving', 'downloading', 'postprocessing')
+  )`);
+  return { where, params };
+}
+
+function listEnqueueCandidateIds(options: { sourceId?: number | null }): number[] {
+  const { where, params } = buildEnqueueWhere(options);
+  return all<{ id: number }>(
+    `SELECT r.id FROM remote_items r JOIN sources s ON s.id = r.source_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY COALESCE(r.fav_time, r.pub_time, r.last_seen_at) DESC, r.id DESC`,
+    params
+  ).map((row) => row.id);
+}
+
+/** 「下载全部」确认框里的精确数量，排除已下载、回收站、队列中与跨收藏夹重复。 */
+export function countEnqueueCandidates(options: { sourceId?: number | null }): { total: number } {
+  return { total: listEnqueueCandidateIds(options).length };
+}
+
+export function enqueueAllRemoteItems(options: {
+  sourceId?: number | null;
+  quality?: QualityPreset;
+}): { total: number; queued: number; skipped: number } {
+  const ids = listEnqueueCandidateIds(options);
+  if (ids.length === 0) return { total: 0, queued: 0, skipped: 0 };
+
+  let queued = 0;
+  let skipped = 0;
+  // 单事务写入，避免 4000 条任务逐条提交把主进程卡住
+  tx(() => {
+    for (let index = 0; index < ids.length; index += 500) {
+      const result = enqueueRemoteItems(ids.slice(index, index + 500), options.quality, { defer: true });
+      queued += result.queued;
+      skipped += result.skipped;
+    }
+  });
+  downloadManager.flush();
+  return { total: ids.length, queued, skipped };
 }

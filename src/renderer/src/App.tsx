@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AppInfoResponse,
   AppSettings,
   AuthStatus,
-  DownloadJob,
   EngineStatus,
   FolderSummary,
+  ImportProgress,
   LibraryStats,
   SmartCollection,
   SourceSummary,
@@ -15,7 +15,7 @@ import type {
 import { api, isDemo } from './lib/bridge';
 import { useUi } from './lib/store';
 import { Inspector } from './components/Inspector';
-import { PlayerOverlay } from './components/PlayerOverlay';
+import { QualityUpgradeModal } from './components/QualityUpgradeModal';
 import { SettingsDialog } from './components/SettingsDialog';
 import { Sidebar } from './components/Sidebar';
 import { SourcesView } from './components/SourcesView';
@@ -28,6 +28,11 @@ import { Button, Field, Modal, TextInput } from './components/ui';
 type BulkKind = 'tag' | 'folder' | 'rate' | 'delete' | null;
 
 const PAGE_SIZE = 120;
+
+// Artplayer / Danmaku 体积较大，播放器按需加载，避免拖慢首屏
+const PlayerOverlay = lazy(() =>
+  import('./components/PlayerOverlay').then((module) => ({ default: module.PlayerOverlay }))
+);
 
 export default function App() {
   const view = useUi((state) => state.view);
@@ -49,7 +54,8 @@ export default function App() {
   const sourcesVersion = useUi((state) => state.sourcesVersion);
   const bumpSources = useUi((state) => state.bumpSources);
   const jobs = useUi((state) => state.jobs);
-  const setJobs = useUi((state) => state.setJobs);
+  const jobsTotal = useUi((state) => state.jobsTotal);
+  const setJobsSnapshot = useUi((state) => state.setJobsSnapshot);
   const pushToast = useUi((state) => state.pushToast);
 
   const [info, setInfo] = useState<AppInfoResponse | null>(null);
@@ -72,6 +78,12 @@ export default function App() {
   const [bulkKind, setBulkKind] = useState<BulkKind>(null);
   const [bulkValue, setBulkValue] = useState('');
   const [selectedItem, setSelectedItem] = useState<VideoItem | null>(null);
+  const [qualityOpen, setQualityOpen] = useState(false);
+  const [importProgress, setImportProgress] = useState<ImportProgress | null>(null);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+    localStorage.getItem('bilishelf-theme') === 'light' ? 'light' : 'dark'
+  );
+  const metaTimer = useRef<number | null>(null);
 
   const refreshMeta = useCallback(async () => {
     try {
@@ -103,11 +115,31 @@ export default function App() {
 
   const refreshJobs = useCallback(async () => {
     try {
-      setJobs(await api.jobs.list());
+      setJobsSnapshot(await api.jobs.list());
     } catch {
       // ignore
     }
-  }, [setJobs]);
+  }, [setJobsSnapshot]);
+
+  // 下载完成可能连续触发素材库事件，合并 500ms 再刷新标签/统计
+  const scheduleMetaRefresh = useCallback(() => {
+    if (metaTimer.current) return;
+    metaTimer.current = window.setTimeout(() => {
+      metaTimer.current = null;
+      void refreshMeta();
+    }, 500);
+  }, [refreshMeta]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('bilishelf-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    return () => {
+      if (metaTimer.current) window.clearTimeout(metaTimer.current);
+    };
+  }, []);
 
   // 首次加载
   useEffect(() => {
@@ -133,23 +165,25 @@ export default function App() {
   useEffect(() => {
     const offLibrary = api.events.onLibrary(() => {
       bumpLibrary();
-      void refreshMeta();
+      scheduleMetaRefresh();
     });
     const offSources = api.events.onSources(() => {
       bumpSources();
       void refreshSources();
     });
-    const offJobs = api.events.onJobs((next) => setJobs(next));
+    const offJobs = api.events.onJobs((snapshot) => setJobsSnapshot(snapshot));
     const offToast = api.events.onToast((toast) => pushToast(toast.kind, toast.message));
     const offAuth = api.events.onAuth((status) => setAuth(status));
+    const offImport = api.events.onImportProgress((progress) => setImportProgress(progress));
     return () => {
       offLibrary();
       offSources();
       offJobs();
       offToast();
       offAuth();
+      offImport();
     };
-  }, [bumpLibrary, bumpSources, pushToast, refreshMeta, refreshSources, setJobs]);
+  }, [bumpLibrary, bumpSources, pushToast, refreshSources, scheduleMetaRefresh, setJobsSnapshot]);
 
   useEffect(() => {
     void refreshSources();
@@ -234,6 +268,8 @@ export default function App() {
       await refreshMeta();
     } catch (error) {
       pushToast('error', (error as Error).message);
+    } finally {
+      setImportProgress(null);
     }
   };
 
@@ -249,6 +285,8 @@ export default function App() {
       await refreshMeta();
     } catch (error) {
       pushToast('error', (error as Error).message);
+    } finally {
+      setImportProgress(null);
     }
   };
 
@@ -295,7 +333,7 @@ export default function App() {
     }
   };
 
-  const trashSelection = async () => {
+  const trashSelection = useCallback(async () => {
     try {
       await api.library.bulk({ ids: selection, action: 'trash' });
       pushToast('info', `已将 ${selection.length} 个素材移入回收站`);
@@ -306,7 +344,7 @@ export default function App() {
     } catch (error) {
       pushToast('error', (error as Error).message);
     }
-  };
+  }, [bumpLibrary, pushToast, refreshMeta, select, selection, selectionClear]);
 
   const restoreSelection = async () => {
     try {
@@ -335,14 +373,43 @@ export default function App() {
   };
 
   const activeJobs = useMemo(
-    () => jobs.filter((job: DownloadJob) => ['downloading', 'postprocessing', 'resolving'].includes(job.status)).length,
+    () => jobs.filter((job) => ['downloading', 'postprocessing', 'resolving'].includes(job.status)).length,
     [jobs]
   );
 
   const tagNames = useMemo(() => tags.map((tag) => tag.name), [tags]);
   const folderNames = useMemo(() => folders.map((folder) => folder.name), [folders]);
   const engineReady = engines?.ready ?? false;
-  const filtered = Boolean(filters.search || filters.tag || filters.folder || filters.status !== 'all');
+  const filtered = Boolean(filters.search || filters.tag || filters.folder || filters.sourceId);
+
+  // 全局快捷键：Ctrl+K 搜索、空格播放、Delete 回收站
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const typing =
+        Boolean(target) &&
+        (target!.tagName === 'INPUT' ||
+          target!.tagName === 'TEXTAREA' ||
+          target!.tagName === 'SELECT' ||
+          target!.isContentEditable);
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        document.getElementById('library-search')?.focus();
+        return;
+      }
+      if (typing) return;
+      if (event.code === 'Space' && playerId === null && view === 'library' && selectedId !== null) {
+        event.preventDefault();
+        openPlayer(selectedId);
+      }
+      if (event.key === 'Delete' && playerId === null && view === 'library' && selection.length > 0) {
+        event.preventDefault();
+        void trashSelection();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openPlayer, playerId, selection, selectedId, view, trashSelection]);
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-ink text-fg">
@@ -358,6 +425,7 @@ export default function App() {
         engines={engines}
         activeJobs={activeJobs}
         activeSourceId={activeSourceId}
+        version={info?.version}
         onSelectSource={(id) => {
           setActiveSourceId(id);
           setView('sources');
@@ -371,6 +439,7 @@ export default function App() {
           grid={layout === 'grid'}
           onToggleGrid={toggleLayout}
           onRefresh={() => void refreshAll()}
+          onQualityUpgrade={() => setQualityOpen(true)}
           onImportFiles={() => void importFiles()}
           onImportFolder={() => void importFolder()}
           onBulkTag={() => {
@@ -386,11 +455,28 @@ export default function App() {
           onBulkRestore={() => void restoreSelection()}
           onBulkDelete={() => setBulkKind('delete')}
           onClearSelection={selectionClear}
+          theme={theme}
+          onToggleTheme={() => setTheme((value) => (value === 'dark' ? 'light' : 'dark'))}
         />
 
         {isDemo ? (
           <div className="flex-none border-b border-blue/20 bg-blue/[0.07] px-4 py-1.5 text-[11px] text-blue/90">
             演示模式：当前在浏览器中预览界面，数据为示例；在 Electron 中运行即可连接本地素材库。
+          </div>
+        ) : null}
+
+        {importProgress && importProgress.total > 0 ? (
+          <div className="flex flex-none items-center gap-2 border-b border-blue/20 bg-blue/[0.05] px-4 py-1.5 text-[11px] text-blue/90">
+            <span className="font-mono">
+              导入中 {importProgress.done}/{importProgress.total}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-dim">{importProgress.current}</span>
+            <div className="h-1 w-40 overflow-hidden rounded bg-panel3">
+              <div
+                className="h-full bg-blue transition-all"
+                style={{ width: `${(importProgress.done / Math.max(importProgress.total, 1)) * 100}%` }}
+              />
+            </div>
           </div>
         ) : null}
 
@@ -430,7 +516,12 @@ export default function App() {
           ) : null}
 
           {view === 'tasks' ? (
-            <TasksView jobs={jobs} engineReady={engineReady} onRefresh={() => void refreshJobs()} />
+            <TasksView
+              jobs={jobs}
+              total={jobsTotal}
+              engineReady={engineReady}
+              onRefresh={() => void refreshJobs()}
+            />
           ) : null}
         </main>
       </div>
@@ -449,7 +540,15 @@ export default function App() {
         />
       ) : null}
 
-      {playerId !== null ? <PlayerOverlay id={playerId} onClose={closePlayer} /> : null}
+      {playerId !== null ? (
+        <Suspense fallback={<div className="fixed inset-0 z-40 bg-black/92" />}>
+          <PlayerOverlay id={playerId} onClose={closePlayer} />
+        </Suspense>
+      ) : null}
+
+      {qualityOpen ? (
+        <QualityUpgradeModal loggedIn={auth?.loggedIn ?? false} onClose={() => setQualityOpen(false)} />
+      ) : null}
 
       {settingsOpen ? (
         <SettingsDialog

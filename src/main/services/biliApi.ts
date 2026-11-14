@@ -99,12 +99,17 @@ export interface FavMedia {
   cid?: number;
 }
 
-export async function listFavoriteItems(mediaId: number, maxPages = 60): Promise<FavMedia[]> {
+export async function listFavoriteItems(
+  mediaId: number,
+  maxPages = 200,
+  options: { onPage?: (count: number) => void; shouldCancel?: () => boolean } = {}
+): Promise<FavMedia[]> {
   const collected: FavMedia[] = [];
   const seen = new Set<string>();
   const pageSize = 40;
 
   for (let page = 1; page <= maxPages; page += 1) {
+    if (options.shouldCancel?.()) throw new Error('已取消同步');
     const data = await apiGet<{
       medias?: FavMedia[] | null;
       has_more?: boolean;
@@ -119,6 +124,7 @@ export async function listFavoriteItems(mediaId: number, maxPages = 60): Promise
       seen.add(media.bvid);
       collected.push(media);
     }
+    options.onPage?.(collected.length);
     if (!data?.has_more || medias.length === 0) break;
     log.debug('[bili] favorite page', page, collected.length);
   }
@@ -143,6 +149,65 @@ export async function listWatchLater(): Promise<WatchLaterItem[]> {
   return data?.list ?? [];
 }
 
+export interface VideoMeta {
+  cid: number | null;
+  aid: number | null;
+  title: string | null;
+  description: string | null;
+  upName: string | null;
+  upMid: number | null;
+  coverUrl: string | null;
+  pageCount: number;
+}
+
+interface ViewData {
+  aid?: number;
+  cid?: number;
+  title?: string;
+  desc?: string;
+  pic?: string;
+  owner?: { mid?: number; name?: string };
+  pages?: Array<{ cid?: number; page?: number; part?: string }>;
+}
+
+/**
+ * 读取视频元数据（cid / aid / 简介 / UP）。
+ * yt-dlp 的 info.json 不包含 cid，弹幕和分 P 去重需要它，所以这里单独查一次。
+ * 该接口是视频页本身就会调用的轻量接口，不走列表同步的 600ms 串行队列。
+ */
+export async function fetchVideoMeta(bvid: string, page = 1): Promise<VideoMeta | null> {
+  try {
+    const response = await biliSession().fetch(
+      `${API}/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`,
+      { headers: HEADERS, signal: AbortSignal.timeout(10_000) }
+    );
+    if (!response.ok) return null;
+    const json = (await response.json()) as { code?: number; data?: ViewData };
+    if (json.code !== 0 || !json.data) return null;
+    const data = json.data;
+    const pages = data.pages ?? [];
+    const target = pages.find((item) => Number(item.page) === page) ?? pages[0];
+    const cid = Number(target?.cid ?? data.cid);
+    return {
+      cid: Number.isFinite(cid) && cid > 0 ? cid : null,
+      aid: Number.isFinite(Number(data.aid)) ? Number(data.aid) : null,
+      title: data.title ?? null,
+      description: data.desc ?? null,
+      upName: data.owner?.name ?? null,
+      upMid: data.owner?.mid ?? null,
+      coverUrl: data.pic ? httpsUrl(data.pic) : null,
+      pageCount: pages.length || 1
+    };
+  } catch (error) {
+    log.debug('[bili] view meta failed', bvid, (error as Error).message);
+    return null;
+  }
+}
+
+function httpsUrl(url: string): string {
+  return url.startsWith('http://') ? `https://${url.slice('http://'.length)}` : url;
+}
+
 export function isUnavailableMedia(media: FavMedia): boolean {
   if (!media) return true;
   const title = media.title ?? '';
@@ -155,7 +220,10 @@ export function isUnavailableMedia(media: FavMedia): boolean {
 /** 弹幕 XML（公开接口，按 cid 获取；失败不阻塞下载）。 */
 export async function fetchDanmakuXml(cid: number): Promise<string | null> {
   try {
-    const response = await biliSession().fetch(`${API}/x/v1/dm/list.so?oid=${cid}`, { headers: HEADERS });
+    const response = await biliSession().fetch(`${API}/x/v1/dm/list.so?oid=${cid}`, {
+      headers: HEADERS,
+      signal: AbortSignal.timeout(15_000)
+    });
     if (!response.ok) return null;
     const text = await response.text();
     return text.includes('<d ') ? text : null;

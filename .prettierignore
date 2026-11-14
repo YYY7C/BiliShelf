@@ -1,0 +1,16 @@
+out/
+release/
+dist/
+node_modules/
+resources/bin/
+media/
+cache/
+backups/
+logs/
+library.db
+library.db-wal
+library.db-shm
+docs/
+package-lock.json
+*.user.js
+*.log

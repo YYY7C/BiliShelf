@@ -241,5 +241,38 @@ export const migrations: Migration[] = [
     sql: /* sql */ `
       ALTER TABLE remote_items ADD COLUMN local_cover TEXT;
     `
+  },
+  {
+    id: 5,
+    name: 'download_upgrade_video',
+    sql: /* sql */ `
+      ALTER TABLE download_jobs ADD COLUMN upgrade_video_id INTEGER;
+    `
+  },
+  {
+    id: 6,
+    name: 'video_quality_checked',
+    sql: /* sql */ `
+      ALTER TABLE videos ADD COLUMN quality_checked_at TEXT;
+    `
+  },
+  {
+    id: 7,
+    name: 'drop_unused_settings_table',
+    sql: /* sql */ `
+      DROP TABLE IF EXISTS settings;
+    `
+  },
+  {
+    id: 8,
+    name: 'normalize_video_keys',
+    sql: /* sql */ `
+      UPDATE videos
+         SET video_key = 'bv:' || bvid || ':' || page
+       WHERE bvid <> '' AND video_key <> 'bv:' || bvid || ':' || page;
+      UPDATE download_jobs
+         SET video_key = 'bv:' || bvid || ':' || page
+       WHERE video_key <> 'bv:' || bvid || ':' || page;
+    `
   }
 ];

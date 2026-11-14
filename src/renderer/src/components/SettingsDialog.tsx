@@ -2,17 +2,28 @@ import clsx from 'clsx';
 import {
   AlertTriangle,
   CheckCircle2,
+  Eraser,
+  Film,
   FolderOpen,
   HardDrive,
+  Image,
   LogIn,
   LogOut,
   RefreshCw,
   Shield,
+  Sparkles,
   Terminal,
   Wrench
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { AppInfoResponse, AppSettings, AuthStatus, EngineStatus, QualityPreset } from '@shared/types';
+import type {
+  AppInfoResponse,
+  AppSettings,
+  AuthStatus,
+  EngineStatus,
+  MaintenanceProgress,
+  QualityPreset
+} from '@shared/types';
 import { api } from '../lib/bridge';
 import { useUi } from '../lib/store';
 import { Button, Chip, Field, Modal, Select, Tag, TextInput, Toggle } from './ui';
@@ -54,6 +65,11 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
   const [tab, setTab] = useState<Tab>('library');
   const [local, setLocal] = useState<AppSettings | null>(settings);
   const [busy, setBusy] = useState(false);
+  const [maintenance, setMaintenance] = useState<MaintenanceProgress | null>(null);
+
+  useEffect(() => {
+    return api.maintenance.onProgress((progress) => setMaintenance(progress));
+  }, []);
 
   // 父组件异步加载/刷新设置后同步到本地表单，避免弹窗里显示旧值
   useEffect(() => {
@@ -106,6 +122,25 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
       pushToast('error', (error as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const runMaintenance = async (
+    label: string,
+    fn: () => Promise<{ updated: number; failed: number; bytesFreed: number; details: string }>
+  ) => {
+    setBusy(true);
+    setMaintenance(null);
+    try {
+      const result = await fn();
+      const freed = result.bytesFreed > 0 ? `，释放 ${Math.round(result.bytesFreed / 1024 / 1024)} MB` : '';
+      pushToast(result.failed > 0 ? 'warn' : 'success', `${label}：${result.details}${freed}`);
+      onReload();
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    } finally {
+      setBusy(false);
+      setMaintenance(null);
     }
   };
 
@@ -242,6 +277,65 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                 </div>
               </div>
 
+              <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-2">
+                <div className="text-[12px] font-medium text-fg">整理与修复</div>
+                <p className="mt-1 text-[11px] leading-4 text-dim">
+                  补全旧版本缺失的 cid / 弹幕、生成悬停预览、压缩封面缓存、清理重复的 info.json 与缩略图。
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => void runMaintenance('补全元数据', () => api.maintenance.backfill())}
+                    disabled={busy}
+                  >
+                    <Sparkles size={12} />
+                    补全 cid / 弹幕
+                  </Button>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => void runMaintenance('生成预览', () => api.maintenance.previews())}
+                    disabled={busy}
+                  >
+                    <Film size={12} />
+                    生成悬停预览
+                  </Button>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => void runMaintenance('压缩封面', () => api.maintenance.covers())}
+                    disabled={busy}
+                  >
+                    <Image size={12} />
+                    压缩封面缓存
+                  </Button>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => void runMaintenance('清理冗余', () => api.maintenance.cleanup())}
+                    disabled={busy}
+                  >
+                    <Eraser size={12} />
+                    清理冗余文件
+                  </Button>
+                </div>
+                {maintenance ? (
+                  <div className="mt-2 flex items-center gap-2 text-[10.5px] text-dim">
+                    <span className="font-mono">
+                      {maintenance.done}/{maintenance.total}
+                    </span>
+                    <div className="h-1 flex-1 overflow-hidden rounded bg-panel3">
+                      <div
+                        className="h-full bg-blue transition-all"
+                        style={{ width: `${(maintenance.done / Math.max(maintenance.total, 1)) * 100}%` }}
+                      />
+                    </div>
+                    <span className="max-w-[220px] truncate">{maintenance.title}</span>
+                  </div>
+                ) : null}
+              </div>
+
               <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-2 text-[11px] leading-5 text-dim">
                 <div className="mb-1 flex items-center gap-1.5 text-[12px] font-medium text-fg">
                   <Shield size={13} className="text-green" />
@@ -311,6 +405,13 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                   onChange={(next) => void update({ autoTagZone: next })}
                   label="自动打平台标签"
                   hint="使用视频公开标签（最多 8 个），仅供本地检索。"
+                />
+                <div className="h-px bg-line2" />
+                <Toggle
+                  checked={local?.generatePreview ?? true}
+                  onChange={(next) => void update({ generatePreview: next })}
+                  label="生成悬停预览"
+                  hint="下载完成后生成 4 秒静音预览片，卡片悬停时播放；每个约 200–500KB。"
                 />
               </div>
             </div>
@@ -429,6 +530,19 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                 <Chip>Artplayer</Chip>
                 <Chip>yt-dlp</Chip>
                 <Chip>FFmpeg</Chip>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  onClick={() =>
+                    void api.app.openExternal('https://github.com/YYY7C/BiliShelf/releases/latest')
+                  }
+                >
+                  检查更新
+                </Button>
+                <span className="text-[11px] text-dim">在浏览器中打开最新 Release</span>
               </div>
 
               <p className="pt-1 text-[11px] leading-5 text-dim">

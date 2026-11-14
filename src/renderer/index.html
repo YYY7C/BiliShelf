@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- B 站 CDN 会对 localhost / file:// 来源的 Referer 返回 403，封面需要不带 Referer 请求 -->
+    <meta name="referrer" content="no-referrer" />
     <title>BiliShelf</title>
   </head>
   <body>

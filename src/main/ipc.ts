@@ -7,6 +7,7 @@ import type {
   EnqueueInput,
   LibraryQuery,
   RemoteItemsQuery,
+  SourcePatch,
   ToolKind,
   UpdateVideoPatch
 } from '@shared/types';
@@ -26,8 +27,8 @@ import {
   stats as libraryStats,
   updateVideo
 } from './db/videos';
-import { listJobs } from './db/jobs';
-import { listSources, queryRemoteItems } from './db/sources';
+import { jobTotalCount, listJobs } from './db/jobs';
+import { listSources, queryRemoteItems, updateSource } from './db/sources';
 import {
   createFolder,
   createTag,
@@ -42,10 +43,26 @@ import {
   renameTag,
   saveSmartCollection
 } from './db/taxonomy';
-import { engineStatus, invalidateEngineCache } from './engine/tools';
+import { engineStatusAsync, invalidateEngineCache } from './engine/tools';
 import { ensureLibraryDirs, libraryPaths } from './paths';
 import { downloadManager } from './services/downloads';
-import { addSources, enqueueRemoteItems, removeSources, syncAllSources, syncSource } from './services/sources';
+import {
+  addSources,
+  cancelSync,
+  countEnqueueCandidates,
+  enqueueAllRemoteItems,
+  enqueueRemoteItems,
+  removeSources,
+  syncAllSources,
+  syncSource
+} from './services/sources';
+import { enqueueQualityUpgrades, scanQualityUpgrades } from './services/quality';
+import {
+  backfillMetadata,
+  cleanupRedundantFiles,
+  compressCoverCache,
+  generateMissingPreviews
+} from './services/maintenance';
 import { importFiles, rebuildFromDisk, videoAbsolutePath, writeSidecar } from './services/library';
 import { getAuthStatus, logout, openLoginWindow } from './services/auth';
 import { cacheRemoteCovers } from './services/covers';
@@ -66,6 +83,18 @@ export function broadcastLibrary(): void {
 }
 export function broadcastSources(): void {
   send(IPC.eventSources);
+}
+
+let libraryBroadcastTimer: NodeJS.Timeout | null = null;
+
+/** 下载完成可能连续触发，合并成 400ms 一次，避免 4000 条任务时事件风暴。 */
+function scheduleLibraryBroadcast(): void {
+  if (libraryBroadcastTimer) return;
+  libraryBroadcastTimer = setTimeout(() => {
+    libraryBroadcastTimer = null;
+    broadcastLibrary();
+    broadcastSources();
+  }, 400);
 }
 export function toast(kind: 'info' | 'success' | 'warn' | 'error', message: string): void {
   send(IPC.eventToast, { kind, message });
@@ -130,7 +159,8 @@ const bulkSchema = z.object({
 export function registerIpc(windowGetter: WindowGetter): void {
   getWindow = windowGetter;
 
-  downloadManager.onChange((jobs) => send(IPC.eventJobs, jobs));
+  downloadManager.onChange((snapshot) => send(IPC.eventJobs, snapshot));
+  downloadManager.onLibraryChanged(scheduleLibraryBroadcast);
 
   /* ---------------------------------- app -------------------------------- */
   ipcMain.handle(IPC.appInfo, () => wrap(() => appInfo()));
@@ -157,6 +187,10 @@ export function registerIpc(windowGetter: WindowGetter): void {
   ipcMain.handle(IPC.settingsGet, () => wrap(() => getSettings()));
   ipcMain.handle(IPC.settingsUpdate, (_e, patch: Partial<AppSettings>) =>
     wrap(() => {
+      // libraryRoot 只能通过「迁移到…」修改，直接改会打开空库并把原素材库“丢”在旧目录。
+      if (patch && Object.prototype.hasOwnProperty.call(patch, 'libraryRoot')) {
+        throw new Error('请使用「迁移到…」修改素材库目录');
+      }
       const before = getSettings();
       const next = updateSettings(patch ?? {});
       if (before.libraryRoot !== next.libraryRoot) {
@@ -242,7 +276,9 @@ export function registerIpc(windowGetter: WindowGetter): void {
         ]
       });
       if (result.canceled || result.filePaths.length === 0) return null;
-      const imported = await importFiles(result.filePaths);
+      const imported = await importFiles(result.filePaths, (done, total, current) =>
+        send(IPC.eventImportProgress, { done, total, current })
+      );
       broadcastLibrary();
       return imported;
     })
@@ -255,7 +291,9 @@ export function registerIpc(windowGetter: WindowGetter): void {
         properties: ['openDirectory']
       });
       if (result.canceled || result.filePaths.length === 0) return null;
-      const imported = await importFiles(result.filePaths);
+      const imported = await importFiles(result.filePaths, (done, total, current) =>
+        send(IPC.eventImportProgress, { done, total, current })
+      );
       broadcastLibrary();
       return imported;
     })
@@ -413,6 +451,20 @@ export function registerIpc(windowGetter: WindowGetter): void {
         return result;
       })
   );
+  ipcMain.handle(IPC.sourcesUpdate, (_e, id: number, patch: SourcePatch) =>
+    wrap(() => {
+      const parsed = z
+        .object({
+          syncEnabled: z.boolean().optional(),
+          note: z.string().max(500).nullable().optional()
+        })
+        .parse(patch ?? {});
+      updateSource(idSchema.parse(id), parsed);
+      const result = listSources();
+      broadcastSources();
+      return result;
+    })
+  );
   ipcMain.handle(IPC.sourcesRemove, (_e, id: number) =>
     wrap(async () => {
       const result = await removeSources(idSchema.parse(id));
@@ -424,7 +476,9 @@ export function registerIpc(windowGetter: WindowGetter): void {
   ipcMain.handle(IPC.sourcesSync, (_e, id: number) =>
     wrap(async () => {
       const sourceId = idSchema.parse(id);
-      const result = await syncSource(sourceId);
+      const result = await syncSource(sourceId, {
+        onProgress: (progress) => send(IPC.eventSyncProgress, progress)
+      });
       broadcastSources();
       void cacheRemoteCovers(sourceId)
         .then((count) => {
@@ -436,7 +490,9 @@ export function registerIpc(windowGetter: WindowGetter): void {
   );
   ipcMain.handle(IPC.sourcesSyncAll, () =>
     wrap(async () => {
-      const result = await syncAllSources();
+      const result = await syncAllSources({
+        onProgress: (progress) => send(IPC.eventSyncProgress, progress)
+      });
       broadcastSources();
       void cacheRemoteCovers()
         .then((count) => {
@@ -454,26 +510,74 @@ export function registerIpc(windowGetter: WindowGetter): void {
       enqueueRemoteItems(idsSchema.parse(ids ?? []), quality ? qualitySchema.parse(quality) : undefined)
     )
   );
+  ipcMain.handle(IPC.sourcesEnqueueAll, (_e, input: { sourceId?: number | null; quality?: string }) =>
+    wrap(() => {
+      const parsed = z
+        .object({
+          sourceId: idSchema.nullable().optional(),
+          quality: qualitySchema.optional()
+        })
+        .parse(input ?? {});
+      return enqueueAllRemoteItems({ sourceId: parsed.sourceId ?? null, quality: parsed.quality });
+    })
+  );
+  ipcMain.handle(IPC.sourcesEnqueuePreview, (_e, input: { sourceId?: number | null }) =>
+    wrap(() => {
+      const parsed = z.object({ sourceId: idSchema.nullable().optional() }).parse(input ?? {});
+      return countEnqueueCandidates({ sourceId: parsed.sourceId ?? null });
+    })
+  );
+  ipcMain.handle(IPC.sourcesCancelSync, () =>
+    wrap(() => {
+      cancelSync();
+    })
+  );
 
   /* --------------------------------- jobs -------------------------------- */
-  ipcMain.handle(IPC.jobsList, () => wrap(() => listJobs()));
+  ipcMain.handle(IPC.jobsList, () => wrap(() => ({ items: listJobs(), total: jobTotalCount() })));
   ipcMain.handle(IPC.jobsPause, (_e, id: number) => wrap(() => downloadManager.pause(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsResume, (_e, id: number) => wrap(() => downloadManager.resume(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsCancel, (_e, id: number) => wrap(() => downloadManager.cancel(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsRetry, (_e, id: number) => wrap(() => downloadManager.retry(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsClear, () => wrap(() => downloadManager.clearFinished()));
 
+  /* ------------------------------- quality ------------------------------- */
+  ipcMain.handle(IPC.qualityScan, () =>
+    wrap(() =>
+      scanQualityUpgrades({
+        onProgress: (progress) => windowGetter()?.webContents.send(IPC.qualityProgress, progress)
+      })
+    )
+  );
+  ipcMain.handle(IPC.qualityEnqueue, (_e, ids: number[]) =>
+    wrap(() => enqueueQualityUpgrades(idsSchema.parse(ids ?? [])))
+  );
+
+  /* ------------------------------ maintenance ---------------------------- */
+  ipcMain.handle(IPC.maintenanceBackfill, () =>
+    wrap(() => backfillMetadata({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))
+  );
+  ipcMain.handle(IPC.maintenancePreviews, () =>
+    wrap(() => generateMissingPreviews({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))
+  );
+  ipcMain.handle(IPC.maintenanceCovers, () =>
+    wrap(() => compressCoverCache({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))
+  );
+  ipcMain.handle(IPC.maintenanceCleanup, () =>
+    wrap(() => cleanupRedundantFiles({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))
+  );
+
   /* -------------------------------- engine ------------------------------- */
-  ipcMain.handle(IPC.engineStatus, () => wrap(() => engineStatus()));
-  ipcMain.handle(IPC.engineRefresh, () => wrap(() => engineStatus(true)));
+  ipcMain.handle(IPC.engineStatus, () => wrap(() => engineStatusAsync()));
+  ipcMain.handle(IPC.engineRefresh, () => wrap(() => engineStatusAsync(true)));
   ipcMain.handle(IPC.engineSetPath, (_e, kind: ToolKind, toolPath: string) =>
-    wrap(() => {
+    wrap(async () => {
       const value = toolSchema.parse(kind);
       const target = String(toolPath ?? '').trim();
       if (value === 'ytdlp') updateSettings({ ytdlpPath: target });
       else updateSettings({ ffmpegPath: target });
       invalidateEngineCache();
-      return engineStatus(true);
+      return engineStatusAsync(true);
     })
   );
   ipcMain.handle(IPC.enginePick, (_e, kind: ToolKind) =>
@@ -484,12 +588,12 @@ export function registerIpc(windowGetter: WindowGetter): void {
         properties: ['openFile'],
         filters: [{ name: '可执行文件', extensions: ['exe'] }]
       });
-      if (result.canceled || result.filePaths.length === 0) return engineStatus();
+      if (result.canceled || result.filePaths.length === 0) return engineStatusAsync();
       const target = result.filePaths[0]!;
       if (value === 'ytdlp') updateSettings({ ytdlpPath: target });
       else updateSettings({ ffmpegPath: target });
       invalidateEngineCache();
-      return engineStatus(true);
+      return engineStatusAsync(true);
     })
   );
 

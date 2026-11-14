@@ -40,6 +40,7 @@ interface SidebarProps {
   engines: EngineStatus | null;
   activeJobs: number;
   activeSourceId: number | null;
+  version?: string;
   onSelectSource: (id: number | null) => void;
 }
 
@@ -97,6 +98,7 @@ export function Sidebar({
   engines,
   activeJobs,
   activeSourceId,
+  version,
   onSelectSource
 }: SidebarProps) {
   const filters = useUi((state) => state.filters);
@@ -129,7 +131,7 @@ export function Sidebar({
         </div>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold leading-4 text-fg">BiliShelf</div>
-          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v0.1</div>
+          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.2.0'}</div>
         </div>
       </div>
 
@@ -156,14 +158,14 @@ export function Sidebar({
           icon={<CheckCircle2 size={14} />}
           label="全部可播放"
           count={stats?.present}
-          active={scopeActive('all') && filters.sort !== 'recent'}
-          onClick={() => pickStatus('all')}
+          active={scopeActive('present') && filters.sort !== 'recent'}
+          onClick={() => pickStatus('present')}
         />
         <NavItem
           icon={<Clock size={14} />}
           label="最近添加"
-          active={scopeActive('all') && filters.sort === 'recent'}
-          onClick={() => pickStatus('all', 'recent')}
+          active={scopeActive('present') && filters.sort === 'recent'}
+          onClick={() => pickStatus('present', 'recent')}
         />
         <NavItem
           icon={<AlertTriangle size={14} />}

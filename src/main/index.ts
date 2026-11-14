@@ -3,12 +3,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import log from 'electron-log/main';
 import { closeDatabase, openDatabase } from './db/index';
+import { recoverInterruptedSyncRuns } from './db/sources';
 import { reconcileFileStatus } from './db/videos';
 import { registerAppProtocol, registerPrivilegedSchemes } from './protocol';
 import { broadcastLibrary, registerIpc } from './ipc';
 import { downloadManager } from './services/downloads';
 import { biliSession, configureBiliSession, getAuthStatus } from './services/auth';
-import { engineStatus } from './engine/tools';
+import { engineStatusAsync } from './engine/tools';
 import { ensureLibraryDirs, fromLibraryRelative, libraryPaths } from './paths';
 
 const DEV_URL = process.env['ELECTRON_RENDERER_URL'];
@@ -136,6 +137,8 @@ if (!gotLock) {
       const paths = ensureLibraryDirs(libraryPaths());
       log.info('[app] library root', paths.root);
       openDatabase();
+      const interruptedSyncs = recoverInterruptedSyncRuns();
+      if (interruptedSyncs > 0) log.info('[app] recovered interrupted sync runs', interruptedSyncs);
       // 日志写进素材库目录，和「设置 → 打开日志目录」保持一致
       log.transports.file.resolvePathFn = () => path.join(libraryPaths().logs, 'main.log');
     } catch (error) {
@@ -186,8 +189,7 @@ if (!gotLock) {
 
     // 引擎探测放在窗口之后，避免拖慢启动
     setTimeout(() => {
-      const status = engineStatus(true);
-      log.info('[app] engine ready =', status.ready);
+      void engineStatusAsync(true).then((status) => log.info('[app] engine ready =', status.ready));
     }, 1200);
 
     // 临时调试：打印收藏夹接口原始响应（仅未打包时）

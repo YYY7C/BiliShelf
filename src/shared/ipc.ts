@@ -3,19 +3,26 @@ import type {
   AppSettings,
   AuthStatus,
   BulkAction,
-  DownloadJob,
   EngineStatus,
   FolderSummary,
+  ImportProgress,
   ImportResult,
+  JobsSnapshot,
   LibraryQuery,
   LibraryResult,
   LibraryStats,
+  MaintenanceProgress,
+  MaintenanceResult,
   QualityPreset,
+  QualityScanProgress,
+  QualityScanResult,
   RemoteItemsQuery,
   RemoteItemsResult,
   SmartCollection,
   SourceKind,
+  SourcePatch,
   SourceSummary,
+  SyncProgress,
   TagSummary,
   ToastEvent,
   ToolKind,
@@ -66,11 +73,15 @@ export const IPC = {
 
   sourcesList: 'sources:list',
   sourcesAdd: 'sources:add',
+  sourcesUpdate: 'sources:update',
   sourcesRemove: 'sources:remove',
   sourcesSync: 'sources:sync',
   sourcesItems: 'sources:items',
   sourcesEnqueue: 'sources:enqueue',
+  sourcesEnqueueAll: 'sources:enqueue-all',
+  sourcesEnqueuePreview: 'sources:enqueue-preview',
   sourcesSyncAll: 'sources:sync-all',
+  sourcesCancelSync: 'sources:cancel-sync',
 
   jobsList: 'jobs:list',
   jobsPause: 'jobs:pause',
@@ -78,6 +89,18 @@ export const IPC = {
   jobsCancel: 'jobs:cancel',
   jobsRetry: 'jobs:retry',
   jobsClear: 'jobs:clear',
+
+  qualityScan: 'quality:scan',
+  qualityEnqueue: 'quality:enqueue',
+  qualityProgress: 'quality:progress',
+
+  maintenanceBackfill: 'maintenance:backfill',
+  maintenancePreviews: 'maintenance:previews',
+  maintenanceCovers: 'maintenance:covers',
+  maintenanceCleanup: 'maintenance:cleanup',
+  eventMaintenance: 'event:maintenance',
+  eventImportProgress: 'event:import-progress',
+  eventSyncProgress: 'event:sync-progress',
 
   engineStatus: 'engine:status',
   engineSetPath: 'engine:set-path',
@@ -149,19 +172,38 @@ export interface BilishelfApi {
   sources: {
     list(): Promise<SourceSummary[]>;
     add(input: { kind: SourceKind; url?: string; remoteId?: string; title?: string }): Promise<SourceSummary[]>;
+    update(id: number, patch: SourcePatch): Promise<SourceSummary[]>;
     remove(id: number): Promise<SourceSummary[]>;
     sync(id: number): Promise<{ added: number; updated: number; unavailable: number }>;
-    syncAll(): Promise<{ added: number; updated: number; unavailable: number }>;
+    syncAll(): Promise<{ added: number; updated: number; unavailable: number; failed: number }>;
     items(query: RemoteItemsQuery): Promise<RemoteItemsResult>;
     enqueue(remoteItemIds: number[], quality?: QualityPreset): Promise<{ queued: number; skipped: number }>;
+    enqueueAll(input: {
+      sourceId?: number | null;
+      quality?: QualityPreset;
+    }): Promise<{ total: number; queued: number; skipped: number }>;
+    enqueuePreview(input: { sourceId?: number | null }): Promise<{ total: number }>;
+    cancelSync(): Promise<void>;
   };
   jobs: {
-    list(): Promise<DownloadJob[]>;
+    list(): Promise<JobsSnapshot>;
     pause(id: number): Promise<void>;
     resume(id: number): Promise<void>;
     cancel(id: number): Promise<void>;
     retry(id: number): Promise<void>;
     clear(): Promise<void>;
+  };
+  quality: {
+    scan(): Promise<QualityScanResult>;
+    enqueue(videoIds: number[]): Promise<{ queued: number; skipped: number }>;
+    onProgress(cb: (progress: QualityScanProgress) => void): () => void;
+  };
+  maintenance: {
+    backfill(): Promise<MaintenanceResult>;
+    previews(): Promise<MaintenanceResult>;
+    covers(): Promise<MaintenanceResult>;
+    cleanup(): Promise<MaintenanceResult>;
+    onProgress(cb: (progress: MaintenanceProgress) => void): () => void;
   };
   engine: {
     status(): Promise<EngineStatus>;
@@ -178,11 +220,13 @@ export interface BilishelfApi {
     progress(id: number, position: number): Promise<void>;
   };
   events: {
-    onJobs(cb: (jobs: DownloadJob[]) => void): () => void;
+    onJobs(cb: (snapshot: JobsSnapshot) => void): () => void;
     onLibrary(cb: () => void): () => void;
     onSources(cb: () => void): () => void;
     onToast(cb: (toast: ToastEvent) => void): () => void;
     onAuth(cb: (status: AuthStatus) => void): () => void;
+    onImportProgress(cb: (progress: ImportProgress) => void): () => void;
+    onSyncProgress(cb: (progress: SyncProgress) => void): () => void;
   };
 }
 

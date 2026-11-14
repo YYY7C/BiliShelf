@@ -4,6 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import log from 'electron-log/main';
+import { parseRange } from '@shared/range';
 import { fromLibraryRelative, isInside, libraryPaths } from './paths';
 import { getAsset, getVideoRow } from './db/videos';
 import { getRemoteCoverPath } from './services/covers';
@@ -59,29 +60,6 @@ const CORS = {
 
 function mimeFor(file: string): string {
   return MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream';
-}
-
-function parseRange(header: string | null, size: number): { start: number; end: number } | null {
-  if (!header) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
-  if (!match) return null;
-  const [, rawStart, rawEnd] = match;
-  let start: number;
-  let end: number;
-  if (!rawStart && rawEnd) {
-    const suffix = Number(rawEnd);
-    if (!Number.isFinite(suffix) || suffix <= 0) return null;
-    start = Math.max(0, size - suffix);
-    end = size - 1;
-  } else {
-    start = Number(rawStart);
-    end = rawEnd ? Number(rawEnd) : size - 1;
-  }
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
-  if (start < 0) start = 0;
-  if (end >= size) end = size - 1;
-  if (start > end) return null;
-  return { start, end };
 }
 
 async function serveFile(request: Request, filePath: string): Promise<Response> {

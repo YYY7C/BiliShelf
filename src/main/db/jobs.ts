@@ -11,6 +11,7 @@ export interface JobRow {
   source_id: number | null;
   remote_item_id: number | null;
   quality: QualityPreset;
+  upgrade_video_id: number | null;
   status: JobStatus;
   progress: number;
   speed: number | null;
@@ -62,6 +63,7 @@ export function listJobs(limit = 200): DownloadJob[] {
     speed: row.speed,
     eta: row.eta,
     quality: row.quality,
+    upgradeVideoId: row.upgrade_video_id ?? null,
     errorCode: row.error_code,
     errorMessage: row.error_message,
     attempts: row.attempts,
@@ -93,13 +95,14 @@ export function createJob(input: {
   sourceId?: number | null;
   remoteItemId?: number | null;
   quality?: QualityPreset;
+  upgradeVideoId?: number | null;
   priority?: number;
   status?: JobStatus;
 }): number {
   const result = run(
     `INSERT INTO download_jobs (
-      video_key, bvid, cid, page, title, source_id, remote_item_id, quality, status, priority, created_at
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      video_key, bvid, cid, page, title, source_id, remote_item_id, quality, upgrade_video_id, status, priority, created_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       input.videoKey,
       input.bvid,
@@ -109,6 +112,7 @@ export function createJob(input: {
       input.sourceId ?? null,
       input.remoteItemId ?? null,
       input.quality ?? 'compat',
+      input.upgradeVideoId ?? null,
       input.status ?? 'queued',
       input.priority ?? 0,
       now()
@@ -205,6 +209,21 @@ export function recoverInterruptedJobs(): number {
 export function clearFinishedJobs(): number {
   const result = run("DELETE FROM download_jobs WHERE status IN ('done','canceled','failed')");
   return result.changes;
+}
+
+/** 自动清理超过 N 天的已结束任务，避免下载几千条后任务表无限膨胀。 */
+export function pruneFinishedJobs(days = 7): number {
+  const result = run(
+    `DELETE FROM download_jobs
+      WHERE status IN ('done','canceled','failed')
+        AND COALESCE(finished_at, created_at) < ?`,
+    [new Date(Date.now() - days * 86_400_000).toISOString()]
+  );
+  return result.changes;
+}
+
+export function jobTotalCount(): number {
+  return one<{ c: number }>('SELECT COUNT(*) AS c FROM download_jobs')?.c ?? 0;
 }
 
 export function nextQueuedJob(): JobRow | undefined {

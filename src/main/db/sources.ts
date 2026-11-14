@@ -1,4 +1,5 @@
 import log from 'electron-log/main';
+import { remoteItemKey } from '@shared/media';
 import type {
   JobStatus,
   RemoteItemsQuery,
@@ -26,6 +27,8 @@ interface SourceRow {
   item_count: number;
   downloaded_count: number;
   unavailable_count: number;
+  cover_item_id?: number | null;
+  remote_cover?: string | null;
 }
 
 export type { SourceRow };
@@ -34,9 +37,17 @@ export function listSources(): SourceSummary[] {
   const rows = all<SourceRow>(`SELECT s.*,
       (SELECT COUNT(*) FROM remote_items r WHERE r.source_id = s.id) AS item_count,
       (SELECT COUNT(*) FROM remote_items r JOIN videos v
-        ON v.bvid = r.bvid AND COALESCE(v.cid, 0) = COALESCE(r.cid, 0) AND v.page = r.page
+        ON v.bvid = r.bvid AND v.page = r.page AND (r.cid IS NULL OR v.cid = r.cid)
         WHERE r.source_id = s.id AND v.status = 'present') AS downloaded_count,
-      (SELECT COUNT(*) FROM remote_items r WHERE r.source_id = s.id AND r.state = 'unavailable') AS unavailable_count
+      (SELECT COUNT(*) FROM remote_items r WHERE r.source_id = s.id AND r.state = 'unavailable') AS unavailable_count,
+      (SELECT r.id FROM remote_items r
+        WHERE r.source_id = s.id AND r.local_cover IS NOT NULL
+        ORDER BY COALESCE(r.fav_time, r.pub_time, r.last_seen_at) DESC, r.id DESC
+        LIMIT 1) AS cover_item_id,
+      (SELECT r.cover_url FROM remote_items r
+        WHERE r.source_id = s.id AND r.cover_url IS NOT NULL AND r.cover_url <> ''
+        ORDER BY COALESCE(r.fav_time, r.pub_time, r.last_seen_at) DESC, r.id DESC
+        LIMIT 1) AS remote_cover
     FROM sources s
     ORDER BY s.id ASC`);
 
@@ -45,7 +56,8 @@ export function listSources(): SourceSummary[] {
     kind: row.kind,
     remoteId: row.remote_id,
     title: row.title,
-    cover: row.cover,
+    cover:
+      row.cover ?? (row.cover_item_id ? `bilishelf://cover/${row.cover_item_id}` : row.remote_cover ?? null),
     ownerMid: row.owner_mid,
     note: row.note,
     itemCount: row.item_count,
@@ -73,7 +85,7 @@ export function addSource(input: {
   ]);
   if (existing) return existing.id;
   const result = run(
-    'INSERT INTO sources (kind, remote_id, title, cover, owner_mid, created_at) VALUES (?,?,?,?,?,?)',
+    'INSERT INTO sources (kind, remote_id, title, cover, owner_mid, sync_enabled, created_at) VALUES (?,?,?,?,?,1,?)',
     [input.kind, input.remoteId, input.title, input.cover ?? null, input.ownerMid ?? null, now()]
   );
   return Number(result.lastInsertRowid);
@@ -81,6 +93,23 @@ export function addSource(input: {
 
 export function removeSource(id: number): void {
   run('DELETE FROM sources WHERE id = ?', [id]);
+}
+
+export function updateSource(id: number, patch: { syncEnabled?: boolean; note?: string | null }): void {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.syncEnabled !== undefined) {
+    sets.push('sync_enabled = ?');
+    params.push(patch.syncEnabled ? 1 : 0);
+  }
+  if (patch.note !== undefined) {
+    sets.push('note = ?');
+    const note = patch.note?.trim() ?? '';
+    params.push(note ? note : null);
+  }
+  if (sets.length === 0) return;
+  params.push(id);
+  run(`UPDATE sources SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
 export function touchSourceSync(id: number): void {
@@ -102,9 +131,7 @@ export interface RemoteSeed {
   state?: RemoteState;
 }
 
-export function remoteItemKey(bvid: string, cid: number | null | undefined, page: number): string {
-  return `${bvid}:${cid ?? 0}:${page}`;
-}
+export { remoteItemKey };
 
 /**
  * 一次同步的写入流程：
@@ -196,6 +223,11 @@ interface RemoteRow {
   state: RemoteState;
   downloaded_video_id: number | null;
   job_status: JobStatus | null;
+  width?: number | null;
+  height?: number | null;
+  vcodec?: string | null;
+  file_size?: number | null;
+  quality_label?: string | null;
 }
 
 export type { RemoteRow };
@@ -209,8 +241,8 @@ export function queryRemoteItems(query: RemoteItemsQuery): RemoteItemsResult {
   }
   if (query.onlyUndownloaded) {
     where.push(`NOT EXISTS (
-      SELECT 1 FROM videos v WHERE v.bvid = r.bvid
-        AND COALESCE(v.cid, 0) = COALESCE(r.cid, 0) AND v.page = r.page AND v.status = 'present'
+      SELECT 1 FROM videos v WHERE v.bvid = r.bvid AND v.page = r.page
+        AND (r.cid IS NULL OR v.cid = r.cid) AND v.status = 'present'
     )`);
   }
   const search = query.search?.trim();
@@ -226,14 +258,17 @@ export function queryRemoteItems(query: RemoteItemsQuery): RemoteItemsResult {
     one<{ c: number }>(`SELECT COUNT(*) AS c FROM remote_items r WHERE ${where.join(' AND ')}`, params)?.c ?? 0;
 
   const rows = all<RemoteRow>(
-    `SELECT r.*,
-       (SELECT v.id FROM videos v
-          WHERE v.bvid = r.bvid AND COALESCE(v.cid, 0) = COALESCE(r.cid, 0) AND v.page = r.page
-            AND v.status = 'present' LIMIT 1) AS downloaded_video_id,
+    `SELECT r.*, dv.id AS downloaded_video_id, dv.width, dv.height, dv.vcodec, dv.file_size, dv.quality_label,
        (SELECT j.status FROM download_jobs j
-          WHERE j.bvid = r.bvid AND COALESCE(j.cid, 0) = COALESCE(r.cid, 0) AND j.page = r.page
+          WHERE j.bvid = r.bvid AND j.page = r.page AND (r.cid IS NULL OR j.cid = r.cid)
           ORDER BY j.id DESC LIMIT 1) AS job_status
      FROM remote_items r
+     LEFT JOIN videos dv ON dv.id = (
+       SELECT v.id FROM videos v
+        WHERE v.bvid = r.bvid AND v.page = r.page AND (r.cid IS NULL OR v.cid = r.cid)
+          AND v.status = 'present'
+        LIMIT 1
+     )
      WHERE ${where.join(' AND ')}
      ORDER BY COALESCE(r.fav_time, r.pub_time, r.last_seen_at) DESC, r.id DESC
      LIMIT ? OFFSET ?`,
@@ -257,7 +292,12 @@ export function queryRemoteItems(query: RemoteItemsQuery): RemoteItemsResult {
       state: row.state,
       tags: parseTags(row.tags_json),
       downloadedVideoId: row.downloaded_video_id,
-      jobStatus: row.job_status
+      jobStatus: row.job_status,
+      width: row.width ?? null,
+      height: row.height ?? null,
+      vcodec: row.vcodec ?? null,
+      fileSize: row.file_size ?? null,
+      qualityLabel: row.quality_label ?? null
     })),
     total
   };
@@ -267,7 +307,7 @@ export function getRemoteItem(id: number): RemoteRow | undefined {
   return one<RemoteRow>(
     `SELECT r.*,
        (SELECT v.id FROM videos v
-          WHERE v.bvid = r.bvid AND COALESCE(v.cid, 0) = COALESCE(r.cid, 0) AND v.page = r.page
+          WHERE v.bvid = r.bvid AND v.page = r.page AND (r.cid IS NULL OR v.cid = r.cid)
             AND v.status = 'present' LIMIT 1) AS downloaded_video_id,
        NULL AS job_status
      FROM remote_items r WHERE r.id = ?`,
@@ -286,6 +326,14 @@ function parseTags(raw: string | null): string[] {
 }
 
 /* ------------------------------- sync runs -------------------------------- */
+
+/** 应用异常退出后，把遗留的 running 记录收尾，避免统计里一直显示“进行中”。 */
+export function recoverInterruptedSyncRuns(): number {
+  return run(
+    "UPDATE sync_runs SET status = 'failed', error = COALESCE(error, 'interrupted'), finished_at = ? WHERE status = 'running'",
+    [now()]
+  ).changes;
+}
 
 export function startSyncRun(sourceId: number): number {
   const result = run('INSERT INTO sync_runs (source_id, status, started_at) VALUES (?,?,?)', [

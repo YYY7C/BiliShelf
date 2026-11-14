@@ -136,6 +136,8 @@ export async function importFiles(inputs: string[], onProgress?: ImportProgress)
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index]!;
     onProgress?.(index, files.length, path.basename(file));
+    // 导入大量文件时让出事件循环，避免主进程长时间无响应
+    await new Promise((resolve) => setImmediate(resolve));
     try {
       const hash = await hashFile(file);
       const videoKey = `local:${hash}`;

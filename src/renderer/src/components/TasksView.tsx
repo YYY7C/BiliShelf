@@ -21,6 +21,7 @@ import { Button, IconButton, ProgressBar, Tag } from './ui';
 
 interface TasksViewProps {
   jobs: DownloadJob[];
+  total: number;
   engineReady: boolean;
   onRefresh: () => void;
 }
@@ -50,7 +51,7 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock size={13} className="text-dim" />;
 }
 
-export function TasksView({ jobs, engineReady, onRefresh }: TasksViewProps) {
+export function TasksView({ jobs, total, engineReady, onRefresh }: TasksViewProps) {
   const pushToast = useUi((state) => state.pushToast);
   const patchFilters = useUi((state) => state.patchFilters);
   const setView = useUi((state) => state.setView);
@@ -79,7 +80,8 @@ export function TasksView({ jobs, engineReady, onRefresh }: TasksViewProps) {
     <div className="flex h-full flex-col">
       <div className="flex flex-none items-center gap-2 border-b border-line2 px-4 py-2.5">
         <div className="text-[11.5px] text-dim">
-          共 {jobs.length} 个任务 · 进行中 {active.length} · 排队 {queued.length}
+          共 {total} 个任务 · 进行中 {active.length} · 排队 {queued.length}
+          {total > jobs.length ? ` · 仅显示最近 ${jobs.length} 条` : ''}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
           <Button variant="ghost" size="sm" onClick={onRefresh}>
@@ -148,6 +150,7 @@ export function TasksView({ jobs, engineReady, onRefresh }: TasksViewProps) {
                             </div>
                             <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-dim">
                               <Tag tone={meta.tone}>{meta.label}</Tag>
+                              {job.upgradeVideoId ? <Tag tone="blue">画质升级</Tag> : null}
                               {job.sourceName ? <span className="truncate">{job.sourceName}</span> : null}
                               <span>·</span>
                               <span>{job.quality === 'audio' ? '仅音频' : job.quality.toUpperCase()}</span>

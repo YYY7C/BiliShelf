@@ -58,7 +58,6 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
 
     const layer = document.createElement('div');
     layer.className = 'danmaku-layer';
-    host.appendChild(layer);
     layerRef.current = layer;
 
     const art = new Artplayer({
@@ -93,6 +92,8 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
         : {})
     });
     artRef.current = art;
+    // 必须在 Artplayer 初始化之后再挂弹幕层，否则会被播放器清空/尺寸为 0
+    host.appendChild(layer);
 
     art.on('ready', () => {
       if (item.playPosition > 5 && item.playPosition < (item.duration ?? Infinity) - 10) {
@@ -117,14 +118,19 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
           const comments = parseBilibiliDanmaku(xml);
           setDanmakuCount(comments.length);
           if (comments.length === 0 || !art.video) return;
-          const danmaku = new Danmaku({
-            container: layer,
-            media: art.video,
-            comments: comments as never,
-            engine: 'canvas',
-            speed: 144
-          });
-          danmakuRef.current = danmaku;
+          // DOM 引擎比 canvas 更稳：canvas 在某些 Electron/GPU 组合下拿不到 2D context
+          try {
+            const danmaku = new Danmaku({
+              container: layer,
+              media: art.video,
+              comments: comments as never,
+              engine: 'dom',
+              speed: 144
+            });
+            danmakuRef.current = danmaku;
+          } catch (error) {
+            console.warn('[player] danmaku init failed', error);
+          }
         })
         .catch(() => undefined);
     }

@@ -30,7 +30,7 @@ function toolPath(kind: ToolKind): string | null {
 }
 
 export async function probeMedia(file: string): Promise<ProbeResult | null> {
-  let ffprobe: string | null = null;
+  let ffprobe: string | null;
   try {
     ffprobe = requireTool('ffprobe').path;
   } catch {
@@ -54,18 +54,26 @@ export async function probeMedia(file: string): Promise<ProbeResult | null> {
         width?: number;
         height?: number;
         duration?: string;
+        bit_rate?: string;
       }>;
     };
     const video = data.streams?.find((stream) => stream.codec_type === 'video');
     const audio = data.streams?.find((stream) => stream.codec_type === 'audio');
     const durationRaw = data.format?.duration ?? video?.duration;
+    // 画质升级要和 yt-dlp 的视频流 tbr 比较，这里优先取视频流码率而不是含音频的总码率
+    const videoBitrate = video?.bit_rate ? Number(video.bit_rate) : null;
     return {
       duration: durationRaw ? Number(durationRaw) : null,
       width: video?.width ?? null,
       height: video?.height ?? null,
       vcodec: video?.codec_name ?? null,
       acodec: audio?.codec_name ?? null,
-      bitrate: data.format?.bit_rate ? Number(data.format.bit_rate) : null,
+      bitrate:
+        videoBitrate && Number.isFinite(videoBitrate)
+          ? videoBitrate
+          : data.format?.bit_rate
+            ? Number(data.format.bit_rate)
+            : null,
       container: data.format?.format_name ?? null,
       size: data.format?.size ? Number(data.format.size) : null
     };

@@ -125,21 +125,21 @@ const demoSources: SourceSummary[] = [
     kind: 'favorite',
     remoteId: '100001',
     title: '动画参考',
-    cover: null,
+    cover: svgCover('动画参考', '#7b3a52', '#1d4d63'),
     ownerMid: 1000,
     itemCount: 312,
     downloadedCount: 9,
     unavailableCount: 4,
     lastSyncedAt: new Date(Date.now() - 3600_000 * 5).toISOString(),
     syncEnabled: true,
-    note: null
+    note: '作画 MAD 与分镜参考，优先补齐 4K'
   },
   {
     id: 2,
     kind: 'watch_later',
     remoteId: 'me',
     title: '稍后再看',
-    cover: null,
+    cover: svgCover('稍后再看', '#2b4c7e', '#6e3f6b'),
     ownerMid: 1000,
     itemCount: 57,
     downloadedCount: 9,
@@ -153,36 +153,44 @@ const demoSources: SourceSummary[] = [
     kind: 'space',
     remoteId: 'https://space.bilibili.com/12345/video',
     title: 'UP 12345',
-    cover: null,
+    cover: svgCover('UP 12345', '#3c6b4e', '#1f3c5e'),
     ownerMid: 12345,
     itemCount: 88,
     downloadedCount: 0,
     unavailableCount: 0,
     lastSyncedAt: null,
-    syncEnabled: true,
+    syncEnabled: false,
     note: null
   }
 ];
 
 function makeRemoteItems(): RemoteItem[] {
-  return Array.from({ length: 24 }).map((_, index) => ({
-    id: index + 1,
-    sourceId: index % 3 === 0 ? 2 : 1,
-    bvid: `BV1remote${String(index + 1).padStart(3, '0')}`,
-    cid: null,
-    page: 1,
-    title: `${TITLES[index % TITLES.length]}${index > 17 ? ' · 补档' : ''}`,
-    coverUrl: svgCover(TITLES[index % TITLES.length]!, GRADIENTS[index % 8]![0], GRADIENTS[index % 8]![1]),
-    duration: 180 + index * 53,
-    upName: UP_NAMES[index % UP_NAMES.length]!,
-    upMid: 1000 + (index % 6),
-    pubTime: new Date(Date.now() - 86400000 * (index + 2)).toISOString(),
-    favTime: new Date(Date.now() - 86400000 * index).toISOString(),
-    state: index === 5 ? 'unavailable' : 'available',
-    tags: TAG_POOL[index % TAG_POOL.length]!,
-    downloadedVideoId: index < 4 ? index + 1 : null,
-    jobStatus: null
-  }));
+  return Array.from({ length: 24 }).map((_, index) => {
+    const downloaded = index < 4;
+    return {
+      id: index + 1,
+      sourceId: index % 3 === 0 ? 2 : 1,
+      bvid: `BV1remote${String(index + 1).padStart(3, '0')}`,
+      cid: null,
+      page: 1,
+      title: `${TITLES[index % TITLES.length]}${index > 17 ? ' · 补档' : ''}`,
+      coverUrl: svgCover(TITLES[index % TITLES.length]!, GRADIENTS[index % 8]![0], GRADIENTS[index % 8]![1]),
+      duration: 180 + index * 53,
+      upName: UP_NAMES[index % UP_NAMES.length]!,
+      upMid: 1000 + (index % 6),
+      pubTime: new Date(Date.now() - 86400000 * (index + 2)).toISOString(),
+      favTime: new Date(Date.now() - 86400000 * index).toISOString(),
+      state: index === 5 ? 'unavailable' : 'available',
+      tags: TAG_POOL[index % TAG_POOL.length]!,
+      downloadedVideoId: downloaded ? index + 1 : null,
+      jobStatus: null,
+      width: downloaded ? 1920 : null,
+      height: downloaded ? 1080 : null,
+      vcodec: downloaded ? (index % 2 === 0 ? 'avc1.640028' : 'hev1.1.6.L120.90') : null,
+      fileSize: downloaded ? Math.round((180 + index * 53) * 1024 * 1024 * 0.16) : null,
+      qualityLabel: downloaded ? '1080P' : null
+    } satisfies RemoteItem;
+  });
 }
 
 const demoRemoteItems = makeRemoteItems();
@@ -224,6 +232,7 @@ const demoJobs: DownloadJob[] = [
     speed: 12_400_000,
     eta: 42,
     quality: 'compat',
+    upgradeVideoId: null,
     errorCode: null,
     errorMessage: null,
     attempts: 0,
@@ -244,6 +253,7 @@ const demoJobs: DownloadJob[] = [
     speed: null,
     eta: null,
     quality: 'compat',
+    upgradeVideoId: null,
     errorCode: null,
     errorMessage: null,
     attempts: 0,
@@ -264,6 +274,7 @@ const demoJobs: DownloadJob[] = [
     speed: null,
     eta: null,
     quality: 'compat',
+    upgradeVideoId: null,
     errorCode: 'FORBIDDEN',
     errorMessage: '当前账号无权限获取该内容（会员/付费/充电专属），已跳过。',
     attempts: 1,
@@ -289,6 +300,7 @@ const demoSettings: AppSettings = {
   autoTagSource: true,
   autoTagUp: true,
   autoTagZone: true,
+  generatePreview: true,
   ytdlpPath: '',
   ffmpegPath: '',
   requestDelayMs: 600
@@ -296,6 +308,36 @@ const demoSettings: AppSettings = {
 
 let localVideos = [...demoVideos];
 let localJobs = [...demoJobs];
+
+function enqueueDemoJobs(ids: number[]): number {
+  const base = localJobs.length;
+  const added = ids
+    .map((id) => demoRemoteItems.find((item) => item.id === id))
+    .filter((item): item is RemoteItem => Boolean(item))
+    .map<DownloadJob>((item, index) => ({
+      id: 100 + base + index,
+      bvid: item.bvid,
+      cid: item.cid,
+      page: item.page,
+      title: item.title,
+      sourceId: item.sourceId,
+      sourceName: demoSources.find((source) => source.id === item.sourceId)?.title ?? null,
+      status: 'queued',
+      progress: 0,
+      speed: null,
+      eta: null,
+      quality: 'compat',
+      upgradeVideoId: null,
+      errorCode: null,
+      errorMessage: null,
+      attempts: 0,
+      createdAt: new Date().toISOString(),
+      startedAt: null,
+      finishedAt: null
+    }));
+  localJobs = [...added, ...localJobs];
+  return added.length;
+}
 
 function delay<T>(value: T, ms = 120): Promise<T> {
   return new Promise((resolve) => setTimeout(() => resolve(value), ms));
@@ -317,7 +359,7 @@ export const demoApi: BilishelfApi = {
   app: {
     info: () =>
       delay({
-        version: '0.1.0-demo',
+        version: '0.2.0-demo',
         electron: '—',
         chrome: '—',
         node: '—',
@@ -449,45 +491,53 @@ export const demoApi: BilishelfApi = {
   sources: {
     list: () => delay(demoSources),
     add: () => delay(demoSources),
+    update: (id, patch) => {
+      const source = demoSources.find((item) => item.id === id);
+      if (source) {
+        if (patch.syncEnabled !== undefined) source.syncEnabled = patch.syncEnabled;
+        if (patch.note !== undefined) source.note = patch.note;
+      }
+      return delay([...demoSources]);
+    },
     remove: () => delay(demoSources),
     sync: () => delay({ added: 3, updated: 24, unavailable: 1 }),
-    syncAll: () => delay({ added: 3, updated: 24, unavailable: 1 }),
+    syncAll: () => delay({ added: 3, updated: 24, unavailable: 1, failed: 0 }),
     items: (query) => {
+      const needle = query.search?.trim().toLowerCase();
       const items = demoRemoteItems.filter(
-        (item) => item.sourceId === query.sourceId && (!query.onlyUnavailable || item.state === 'unavailable')
+        (item) =>
+          item.sourceId === query.sourceId &&
+          (!query.onlyUnavailable || item.state === 'unavailable') &&
+          (!query.onlyUndownloaded || !item.downloadedVideoId) &&
+          (!needle || `${item.title} ${item.upName ?? ''}`.toLowerCase().includes(needle))
       );
       return delay({ items, total: items.length });
     },
     enqueue: (ids) => {
-      const added = ids
-        .map((id) => demoRemoteItems.find((item) => item.id === id))
-        .filter((item): item is RemoteItem => Boolean(item))
-        .map<DownloadJob>((item, index) => ({
-          id: 100 + index,
-          bvid: item.bvid,
-          cid: item.cid,
-          page: item.page,
-          title: item.title,
-          sourceId: item.sourceId,
-          sourceName: demoSources.find((source) => source.id === item.sourceId)?.title ?? null,
-          status: 'queued',
-          progress: 0,
-          speed: null,
-          eta: null,
-          quality: 'compat',
-          errorCode: null,
-          errorMessage: null,
-          attempts: 0,
-          createdAt: new Date().toISOString(),
-          startedAt: null,
-          finishedAt: null
-        }));
-      localJobs = [...added, ...localJobs];
-      return delay({ queued: added.length, skipped: 0 });
-    }
+      const queued = enqueueDemoJobs(ids);
+      return delay({ queued, skipped: 0 });
+    },
+    enqueueAll: (input) => {
+      const pool = demoRemoteItems.filter((item) => {
+        if (item.state === 'unavailable' || item.downloadedVideoId) return false;
+        if (input.sourceId != null) return item.sourceId === input.sourceId;
+        return demoSources.find((source) => source.id === item.sourceId)?.kind === 'favorite';
+      });
+      const queued = enqueueDemoJobs(pool.map((item) => item.id));
+      return delay({ total: pool.length, queued, skipped: 0 });
+    },
+    enqueuePreview: (input) => {
+      const total = demoRemoteItems.filter((item) => {
+        if (item.state === 'unavailable' || item.downloadedVideoId) return false;
+        if (input.sourceId != null) return item.sourceId === input.sourceId;
+        return demoSources.find((source) => source.id === item.sourceId)?.kind === 'favorite';
+      }).length;
+      return delay({ total });
+    },
+    cancelSync: async () => undefined
   },
   jobs: {
-    list: () => delay(localJobs),
+    list: () => delay({ items: localJobs, total: localJobs.length }),
     pause: async () => undefined,
     resume: async () => undefined,
     cancel: async () => undefined,
@@ -495,6 +545,49 @@ export const demoApi: BilishelfApi = {
     clear: async () => {
       localJobs = [];
     }
+  },
+  quality: {
+    scan: () =>
+      delay({
+        scanned: 16,
+        failed: 0,
+        remaining: 0,
+        candidates: [
+          {
+            videoId: 1,
+            bvid: 'BV1demo001',
+            title: 'Blender 4.2 硬表面建模全流程（含 UV 与烘焙）',
+            sourceId: 1,
+            sourceName: '动画参考',
+            currentHeight: 1080,
+            currentBitrate: 2500000,
+            availableHeight: 2160,
+            availableBitrate: 12000000,
+            reason: 'resolution' as const
+          },
+          {
+            videoId: 2,
+            bvid: 'BV1demo002',
+            title: '为什么你的 UI 看起来不高级？三个真实案例拆解',
+            sourceId: 1,
+            sourceName: '动画参考',
+            currentHeight: 1080,
+            currentBitrate: 1800000,
+            availableHeight: 1080,
+            availableBitrate: 4200000,
+            reason: 'bitrate' as const
+          }
+        ]
+      }),
+    enqueue: (ids) => delay({ queued: ids.length, skipped: 0 }),
+    onProgress: () => () => undefined
+  },
+  maintenance: {
+    backfill: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
+    previews: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
+    covers: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
+    cleanup: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
+    onProgress: () => () => undefined
   },
   engine: {
     status: () =>
@@ -523,7 +616,9 @@ export const demoApi: BilishelfApi = {
     onLibrary: () => () => undefined,
     onSources: () => () => undefined,
     onToast: () => () => undefined,
-    onAuth: () => () => undefined
+    onAuth: () => () => undefined,
+    onImportProgress: () => () => undefined,
+    onSyncProgress: () => () => undefined
   }
 };
 

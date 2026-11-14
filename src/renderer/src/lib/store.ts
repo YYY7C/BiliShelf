@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { DownloadJob, SortKey, VideoStatus } from '@shared/types';
+import type { DownloadJob, JobsSnapshot, SortKey, VideoStatus } from '@shared/types';
 
 export type View = 'library' | 'sources' | 'tasks';
 
@@ -29,6 +29,7 @@ interface UiState {
   libraryVersion: number;
   sourcesVersion: number;
   jobs: DownloadJob[];
+  jobsTotal: number;
   toasts: Toast[];
 
   setView: (view: View) => void;
@@ -44,7 +45,7 @@ interface UiState {
   closePlayer: () => void;
   bumpLibrary: () => void;
   bumpSources: () => void;
-  setJobs: (jobs: DownloadJob[]) => void;
+  setJobsSnapshot: (snapshot: JobsSnapshot) => void;
   pushToast: (kind: Toast['kind'], message: string) => void;
   dismissToast: (id: number) => void;
 }
@@ -53,7 +54,7 @@ const defaultFilters: Filters = {
   search: '',
   tag: null,
   folder: null,
-  status: 'all',
+  status: 'present',
   sourceId: null,
   sort: 'added'
 };
@@ -71,6 +72,7 @@ export const useUi = create<UiState>((set, get) => ({
   libraryVersion: 0,
   sourcesVersion: 0,
   jobs: [],
+  jobsTotal: 0,
   toasts: [],
 
   setView: (view) => set({ view }),
@@ -98,7 +100,7 @@ export const useUi = create<UiState>((set, get) => ({
   closePlayer: () => set({ playerId: null }),
   bumpLibrary: () => set((state) => ({ libraryVersion: state.libraryVersion + 1 })),
   bumpSources: () => set((state) => ({ sourcesVersion: state.sourcesVersion + 1 })),
-  setJobs: (jobs) => set({ jobs }),
+  setJobsSnapshot: (snapshot) => set({ jobs: snapshot.items, jobsTotal: snapshot.total }),
   pushToast: (kind, message) =>
     set((state) => ({
       toasts: [...state.toasts.slice(-3), { id: toastSeq++, kind, message }]
