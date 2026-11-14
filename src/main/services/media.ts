@@ -123,6 +123,28 @@ export async function makeThumbnail(video: string, output: string, durationSec?:
   return false;
 }
 
+/** 用封面原图生成 640px 缩略图：比视频抽帧更清晰，也保留 B 站原始构图。 */
+export async function makeCoverThumbnail(image: string, output: string): Promise<boolean> {
+  const ffmpeg = toolPath('ffmpeg');
+  if (!ffmpeg) return false;
+
+  const jpg = output.replace(/\.webp$/i, '.jpg');
+  const attempts: Array<{ args: string[]; out: string }> = [
+    { out: output, args: ['-i', image, '-frames:v', '1', '-vf', 'scale=640:-2', '-y', output] },
+    {
+      out: jpg,
+      args: ['-i', image, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '3', '-y', jpg]
+    }
+  ];
+
+  for (const attempt of attempts) {
+    const { code } = await run(ffmpeg, attempt.args, 30_000);
+    if (code === 0 && fs.existsSync(attempt.out)) return true;
+  }
+  log.warn('[media] cover thumbnail failed', image);
+  return false;
+}
+
 /** 生成 4 秒静音预览片，用于网格悬停；失败不阻塞主流程。 */
 export async function makePreview(video: string, output: string, durationSec?: number | null): Promise<boolean> {
   const ffmpeg = toolPath('ffmpeg');

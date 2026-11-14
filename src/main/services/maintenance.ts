@@ -10,7 +10,7 @@ import { qualityLabelText } from '@shared/format';
 import { fetchDanmakuXml, fetchVideoMeta } from './biliApi';
 import { recompressCovers } from './covers';
 import { generatePreview, writeSidecar } from './library';
-import { probeMedia } from './media';
+import { probeMedia, makeCoverThumbnail } from './media';
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -148,6 +148,59 @@ export async function generateMissingPreviews(options: {
     failed,
     bytesFreed: 0,
     details: `生成 ${updated} 个预览片`
+  };
+}
+
+/** 旧版本的缩略图是视频抽帧，这里统一换成封面原图的 640px 版本。 */
+export async function rebuildCoverThumbnails(options: {
+  onProgress?: (progress: MaintenanceProgress) => void;
+} = {}): Promise<MaintenanceResult> {
+  const rows = all<{ id: number; title: string; cover_path: string }>(
+    `SELECT v.id, v.title, c.path AS cover_path
+       FROM videos v
+       JOIN assets c ON c.video_id = v.id AND c.type = 'cover'
+      WHERE v.status <> 'trashed'
+      ORDER BY v.id ASC`
+  );
+  const paths = ensureLibraryDirs(libraryPaths());
+  let updated = 0;
+  let failed = 0;
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]!;
+    options.onProgress?.({ phase: 'thumbs', done: index + 1, total: rows.length, title: row.title });
+    const cover = fromLibraryRelative(paths.root, row.cover_path);
+    const target = path.join(paths.thumbs, `v${row.id}.webp`);
+    const jpg = target.replace(/\.webp$/i, '.jpg');
+    try {
+      if (!fs.existsSync(cover)) {
+        failed += 1;
+        continue;
+      }
+      if (!(await makeCoverThumbnail(cover, target))) {
+        failed += 1;
+        continue;
+      }
+      const finalPath = fs.existsSync(target) ? target : jpg;
+      if (!fs.existsSync(finalPath)) {
+        failed += 1;
+        continue;
+      }
+      setAsset(row.id, 'thumb', toLibraryRelative(paths.root, finalPath), fs.statSync(finalPath).size, 'image/webp');
+      await fsp.rm(finalPath === target ? jpg : target, { force: true }).catch(() => undefined);
+      updated += 1;
+    } catch (error) {
+      failed += 1;
+      log.warn('[maintenance] cover thumb failed', row.id, (error as Error).message);
+    }
+  }
+
+  return {
+    total: rows.length,
+    updated,
+    failed,
+    bytesFreed: 0,
+    details: `重建 ${updated} 张封面缩略图`
   };
 }
 

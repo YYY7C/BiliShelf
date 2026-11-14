@@ -359,7 +359,7 @@ export const demoApi: BilishelfApi = {
   app: {
     info: () =>
       delay({
-        version: '0.2.0-demo',
+        version: '0.2.1-demo',
         electron: '—',
         chrome: '—',
         node: '—',
@@ -586,6 +586,7 @@ export const demoApi: BilishelfApi = {
     backfill: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
     previews: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
     covers: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
+    thumbs: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
     cleanup: () => delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式' }),
     onProgress: () => () => undefined
   },

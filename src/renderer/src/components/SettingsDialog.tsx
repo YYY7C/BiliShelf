@@ -280,7 +280,7 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
               <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-2">
                 <div className="text-[12px] font-medium text-fg">整理与修复</div>
                 <p className="mt-1 text-[11px] leading-4 text-dim">
-                  补全旧版本缺失的 cid / 弹幕、生成悬停预览、压缩封面缓存、清理重复的 info.json 与缩略图。
+                  补全旧版本缺失的 cid / 弹幕、生成悬停预览、压缩封面缓存、重建封面缩略图、清理重复的 info.json 与缩略图。
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Button
@@ -309,6 +309,15 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                   >
                     <Image size={12} />
                     压缩封面缓存
+                  </Button>
+                  <Button
+                    variant="subtle"
+                    size="sm"
+                    onClick={() => void runMaintenance('重建封面缩略图', () => api.maintenance.thumbs())}
+                    disabled={busy}
+                  >
+                    <Image size={12} />
+                    重建封面缩略图
                   </Button>
                   <Button
                     variant="subtle"

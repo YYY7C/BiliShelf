@@ -338,7 +338,7 @@ export interface ImportProgress {
   current: string;
 }
 
-export type MaintenancePhase = 'metadata' | 'previews' | 'covers' | 'cleanup';
+export type MaintenancePhase = 'metadata' | 'previews' | 'covers' | 'thumbs' | 'cleanup';
 
 export interface MaintenanceProgress {
   phase: MaintenancePhase;

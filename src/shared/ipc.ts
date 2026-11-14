@@ -97,6 +97,7 @@ export const IPC = {
   maintenanceBackfill: 'maintenance:backfill',
   maintenancePreviews: 'maintenance:previews',
   maintenanceCovers: 'maintenance:covers',
+  maintenanceThumbs: 'maintenance:thumbs',
   maintenanceCleanup: 'maintenance:cleanup',
   eventMaintenance: 'event:maintenance',
   eventImportProgress: 'event:import-progress',
@@ -202,6 +203,7 @@ export interface BilishelfApi {
     backfill(): Promise<MaintenanceResult>;
     previews(): Promise<MaintenanceResult>;
     covers(): Promise<MaintenanceResult>;
+    thumbs(): Promise<MaintenanceResult>;
     cleanup(): Promise<MaintenanceResult>;
     onProgress(cb: (progress: MaintenanceProgress) => void): () => void;
   };

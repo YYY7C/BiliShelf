@@ -118,6 +118,7 @@ const api: BilishelfApi = {
     backfill: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceBackfill),
     previews: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenancePreviews),
     covers: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceCovers),
+    thumbs: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceThumbs),
     cleanup: (): Promise<MaintenanceResult> => ipcRenderer.invoke(IPC.maintenanceCleanup),
     onProgress: (cb: (progress: MaintenanceProgress) => void) => subscribe(IPC.eventMaintenance, cb)
   },

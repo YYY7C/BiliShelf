@@ -61,7 +61,8 @@ import {
   backfillMetadata,
   cleanupRedundantFiles,
   compressCoverCache,
-  generateMissingPreviews
+  generateMissingPreviews,
+  rebuildCoverThumbnails
 } from './services/maintenance';
 import { importFiles, rebuildFromDisk, videoAbsolutePath, writeSidecar } from './services/library';
 import { getAuthStatus, logout, openLoginWindow } from './services/auth';
@@ -562,6 +563,9 @@ export function registerIpc(windowGetter: WindowGetter): void {
   );
   ipcMain.handle(IPC.maintenanceCovers, () =>
     wrap(() => compressCoverCache({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))
+  );
+  ipcMain.handle(IPC.maintenanceThumbs, () =>
+    wrap(() => rebuildCoverThumbnails({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))
   );
   ipcMain.handle(IPC.maintenanceCleanup, () =>
     wrap(() => cleanupRedundantFiles({ onProgress: (progress) => send(IPC.eventMaintenance, progress) }))

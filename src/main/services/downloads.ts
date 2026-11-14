@@ -22,7 +22,7 @@ import {
 import { getRemoteItem, getSource } from '../db/sources';
 import { deleteCookiesFile, exportCookiesFile } from './auth';
 import { downloadVideo, findDownloadedVideo, findSidecarFiles } from '../engine/ytdlp';
-import { makeThumbnail, probeMedia } from './media';
+import { makeCoverThumbnail, makeThumbnail, probeMedia } from './media';
 import { fetchDanmakuXml, fetchVideoMeta } from './biliApi';
 import { generatePreview, writeSidecar } from './library';
 import { writeNfo } from './nfo';
@@ -507,11 +507,18 @@ class DownloadManager {
       }
     }
 
+    // 卡片优先展示封面原图缩略图；没有封面（如本地导入）才退回视频抽帧
     const thumbWebp = path.join(paths.thumbs, `v${videoId}.webp`);
-    if (await makeThumbnail(videoFile, thumbWebp, probe?.duration ?? null)) {
+    const thumbOk =
+      coverPath && fs.existsSync(coverPath)
+        ? await makeCoverThumbnail(coverPath, thumbWebp)
+        : await makeThumbnail(videoFile, thumbWebp, probe?.duration ?? null);
+    if (thumbOk) {
       const finalThumb = fs.existsSync(thumbWebp) ? thumbWebp : thumbWebp.replace(/\.webp$/i, '.jpg');
       if (fs.existsSync(finalThumb)) {
         setAsset(videoId, 'thumb', toLibraryRelative(paths.root, finalThumb), fs.statSync(finalThumb).size, 'image/webp');
+        const staleThumb = finalThumb === thumbWebp ? thumbWebp.replace(/\.webp$/i, '.jpg') : thumbWebp;
+        if (staleThumb !== finalThumb) await fsp.rm(staleThumb, { force: true }).catch(() => undefined);
       }
     }
 
