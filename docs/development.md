@@ -55,7 +55,7 @@ powershell -ExecutionPolicy Bypass -File scripts\prepare-engines.ps1 -Proxy http
   - 便携版：**你双击的那个 `.exe` 所在目录**（读取 `PORTABLE_EXECUTABLE_DIR`，不会把库丢进临时解压目录）
 - 便携版解压目录固定为 `BiliShelf`（`portable.unpackDirName`），避免每次启动重新解压
 - 未配置代码签名证书时自动跳过签名；首次运行 SmartScreen 可能提示，选「仍要运行」即可
-- 因为引擎有 265 MB，安装包约 130–150 MB（7z 压缩后），安装后约 350 MB
+- 因为引擎有 265 MB，安装包约 200–220 MB（7z 压缩后），安装后约 350 MB
 
 如果你想要**不带引擎的瘦身版**（让用户自备 yt-dlp/ffmpeg，或在设置里指定），把 `package.json` 里的 `extraResources` 删掉再打包即可。
 
