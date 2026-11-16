@@ -464,6 +464,15 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                   hint="下载完成后生成 4 秒静音预览片，卡片悬停时播放；每个约 200–500KB。"
                 />
               </div>
+
+              <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-1">
+                <Toggle
+                  checked={local?.closeToTray ?? true}
+                  onChange={(next) => void update({ closeToTray: next })}
+                  label="关闭窗口时收进托盘"
+                  hint="收进托盘后应用继续在后台下载和打标；托盘菜单可查看进度、全部暂停/开始，选择「退出」才真正退出。"
+                />
+              </div>
             </div>
           ) : null}
 

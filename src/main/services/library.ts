@@ -3,18 +3,27 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import log from 'electron-log/main';
-import type { ImportResult, VideoItem } from '@shared/types';
-import { ensureLibraryDirs, fromLibraryRelative, libraryPaths, safeSegment, toLibraryRelative, uniquePath } from '../paths';
+import type { AiTagRef, ImportResult, VideoItem } from '@shared/types';
+import {
+  ensureLibraryDirs,
+  fromLibraryRelative,
+  libraryPaths,
+  safeSegment,
+  toLibraryRelative,
+  uniquePath
+} from '../paths';
 import {
   assignFolderByName,
   assignTagByName,
   getAsset,
   getVideo,
   getVideoRow,
+  refreshVideoFts,
   setAsset,
   upsertVideo,
   updateVideo
 } from '../db/videos';
+import { getAiTaggedAt, getApprovedAiTags, restoreApprovedAiTag } from '../db/ai';
 import { all, one } from '../db/index';
 import { makeThumbnail, makePreview, probeMedia } from './media';
 
@@ -98,7 +107,11 @@ async function placeFile(source: string, preferredName: string): Promise<string>
   return toLibraryRelative(paths.root, target);
 }
 
-async function attachThumbnail(videoId: number, absoluteVideo: string, duration: number | null): Promise<boolean> {
+async function attachThumbnail(
+  videoId: number,
+  absoluteVideo: string,
+  duration: number | null
+): Promise<boolean> {
   const paths = ensureLibraryDirs(libraryPaths());
   const base = `v${videoId}`;
   const thumbWebp = path.join(paths.thumbs, `${base}.webp`);
@@ -204,6 +217,9 @@ export interface SidecarFile {
   source: { id: number | null; name: string | null };
   tags: string[];
   folders: string[];
+  /** 审核通过的 AI 标签，独立于 tags */
+  aiTags?: AiTagRef[];
+  aiTaggedAt?: string | null;
   rating: number;
   note: string;
   files: Record<string, string | null>;
@@ -263,6 +279,8 @@ export async function writeSidecar(videoId: number): Promise<void> {
     source: { id: video.sourceId, name: video.sourceName },
     tags: video.tags,
     folders: video.folders,
+    aiTags: getApprovedAiTags(videoId),
+    aiTaggedAt: getAiTaggedAt(videoId),
     rating: video.rating,
     note: video.note,
     files,
@@ -349,6 +367,12 @@ export async function rebuildFromDisk(): Promise<{ scanned: number; restored: nu
       }
       for (const tag of data.tags ?? []) assignTagByName(id, tag, 'manual');
       for (const folder of data.folders ?? []) assignFolderByName(id, folder);
+      if (Array.isArray(data.aiTags) && data.aiTags.length > 0) {
+        for (const tag of data.aiTags) {
+          restoreApprovedAiTag(id, { ...tag, approvedAt: data.aiTaggedAt ?? undefined });
+        }
+        refreshVideoFts(id);
+      }
       if (typeof data.rating === 'number' || data.note) {
         updateVideo(id, { rating: data.rating ?? 0, note: data.note ?? '' });
       }

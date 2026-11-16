@@ -42,7 +42,12 @@ function FilterChip({ label, onClear }: { label: string; onClear: () => void }) 
   return (
     <span className="inline-flex items-center gap-1 rounded-md border border-blue/30 bg-blue/10 px-1.5 py-0.5 text-[11px] text-blue">
       {label}
-      <button type="button" aria-label={`清除筛选 ${label}`} onClick={onClear} className="opacity-70 hover:opacity-100">
+      <button
+        type="button"
+        aria-label={`清除筛选 ${label}`}
+        onClick={onClear}
+        className="opacity-70 hover:opacity-100"
+      >
         <X size={10} />
       </button>
     </span>
@@ -52,7 +57,7 @@ function FilterChip({ label, onClear }: { label: string; onClear: () => void }) 
 interface TopBarProps {
   total: number;
   loading: boolean;
-  view: 'library' | 'sources' | 'tasks';
+  view: 'library' | 'sources' | 'tasks' | 'ai';
   grid: boolean;
   onToggleGrid: () => void;
   onRefresh: () => void;
@@ -102,12 +107,20 @@ export function TopBar({
   const hasFilter =
     !['all', 'present'].includes(filters.status) ||
     Boolean(filters.tag) ||
+    Boolean(filters.aiTag) ||
     Boolean(filters.folder) ||
     Boolean(filters.sourceId) ||
     Boolean(filters.search.trim());
 
   const clearAllFilters = () =>
-    patchFilters({ status: 'present', tag: null, folder: null, sourceId: null, search: '' });
+    patchFilters({
+      status: 'present',
+      tag: null,
+      aiTag: null,
+      folder: null,
+      sourceId: null,
+      search: ''
+    });
 
   return (
     <header className="flex-none border-b border-line2 bg-panel/40">
@@ -115,12 +128,15 @@ export function TopBar({
         {view === 'library' ? (
           <>
             <div className="relative min-w-0 flex-1">
-              <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-dim" />
+              <Search
+                size={14}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-dim"
+              />
               <input
                 id="library-search"
                 value={filters.search}
                 onChange={(event) => patchFilters({ search: event.target.value })}
-                placeholder="搜索标题、UP 主、标签、备注…"
+                placeholder="搜索标题、UP 主、标签、AI 标签、备注…"
                 className="h-8 w-full rounded-lg border border-line bg-panel2 pl-8 pr-16 text-[12.5px] text-fg placeholder:text-dim focus:border-blue/40 focus:outline-none focus:ring-2 focus:ring-blue/10"
               />
               <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
@@ -167,12 +183,14 @@ export function TopBar({
         ) : (
           <div className="flex-1">
             <div className="text-[13px] font-medium text-fg">
-              {view === 'sources' ? '来源清单' : '下载任务'}
+              {view === 'sources' ? '来源清单' : view === 'tasks' ? '下载任务' : 'AI 打标'}
             </div>
             <div className="text-[11px] text-dim">
               {view === 'sources'
                 ? '先拉取列表与元数据，再在本地挑选要同步的条目'
-                : '队列、进度与失败原因；暂停不会删除已下载内容'}
+                : view === 'tasks'
+                  ? '队列、进度与失败原因；暂停不会删除已下载内容'
+                  : '按画面内容生成标签，审核通过后进入本地标签'}
             </div>
           </div>
         )}
@@ -192,9 +210,11 @@ export function TopBar({
               <PanelRight size={15} />
             </IconButton>
           ) : null}
-          <IconButton label="检查画质升级" onClick={onQualityUpgrade}>
-            <TrendingUp size={15} />
-          </IconButton>
+          {view === 'library' ? (
+            <IconButton label="检查画质升级" onClick={onQualityUpgrade}>
+              <TrendingUp size={15} />
+            </IconButton>
+          ) : null}
           <IconButton label="刷新" onClick={onRefresh}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : undefined} />
           </IconButton>
@@ -227,7 +247,12 @@ export function TopBar({
               onClear={() => patchFilters({ status: 'present' })}
             />
           ) : null}
-          {filters.tag ? <FilterChip label={`标签：${filters.tag}`} onClear={() => patchFilters({ tag: null })} /> : null}
+          {filters.tag ? (
+            <FilterChip label={`标签：${filters.tag}`} onClear={() => patchFilters({ tag: null })} />
+          ) : null}
+          {filters.aiTag ? (
+            <FilterChip label={`AI 标签：${filters.aiTag}`} onClear={() => patchFilters({ aiTag: null })} />
+          ) : null}
           {filters.folder ? (
             <FilterChip label={`文件夹：${filters.folder}`} onClear={() => patchFilters({ folder: null })} />
           ) : null}
@@ -235,7 +260,10 @@ export function TopBar({
             <FilterChip label="来源筛选" onClear={() => patchFilters({ sourceId: null })} />
           ) : null}
           {filters.search.trim() ? (
-            <FilterChip label={`搜索：${filters.search.trim()}`} onClear={() => patchFilters({ search: '' })} />
+            <FilterChip
+              label={`搜索：${filters.search.trim()}`}
+              onClear={() => patchFilters({ search: '' })}
+            />
           ) : null}
           <button
             type="button"
@@ -247,7 +275,8 @@ export function TopBar({
         </div>
       ) : null}
 
-      {selectedCount > 0 && view === 'library' ? (        <div className="flex h-10 items-center gap-2 border-t border-line2 bg-pink/[0.06] px-3">
+      {selectedCount > 0 && view === 'library' ? (
+        <div className="flex h-10 items-center gap-2 border-t border-line2 bg-pink/[0.06] px-3">
           <span className="text-[12px] text-pink">已选 {selectedCount}</span>
           <div className="ml-1 flex items-center gap-1">
             <Button size="sm" variant="subtle" onClick={onBulkTag}>

@@ -1,8 +1,8 @@
 {
   "name": "bilishelf",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "private": true,
-  "description": "本地 B 站收藏夹素材库：选择性同步、标签整理、内置播放",
+  "description": "本地 B 站收藏夹素材库：选择性同步、AI 自动打标、标签整理、内置播放",
   "author": "BiliShelf",
   "main": "./out/main/index.js",
   "license": "MIT",
@@ -48,6 +48,7 @@
     "prettier": "^3.10.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "tailwind-merge": "^3.7.0",
     "tailwindcss": "^4.3.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.2",
@@ -64,6 +65,8 @@
     },
     "files": [
       "out/**/*",
+      "resources/icon.ico",
+      "resources/icon.png",
       "package.json"
     ],
     "extraResources": [

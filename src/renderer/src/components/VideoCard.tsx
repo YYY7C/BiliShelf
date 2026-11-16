@@ -1,5 +1,5 @@
 import clsx from 'clsx';
-import { AlertTriangle, CheckCircle2, Play, Star, StickyNote, XCircle } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Play, Sparkles, Star, StickyNote, XCircle } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { VideoItem } from '@shared/types';
 import { formatBytes, formatDuration, resolutionLabel, shorten } from '../lib/format';
@@ -47,6 +47,18 @@ export function VideoCard({ item, layout, active, selected, onSelect, onOpen }: 
   const cover = item.thumbUrl ?? item.coverUrl;
   const canPlay = Boolean(item.videoUrl);
   const progress = item.duration && item.playPosition ? Math.min(1, item.playPosition / item.duration) : 0;
+  const seenTags = new Set<string>();
+  const topTags = [
+    ...item.tags.map((name) => ({ name, ai: false })),
+    ...item.aiTags.map((tag) => ({ name: tag.name, ai: true }))
+  ]
+    .filter((tag) => {
+      if (seenTags.has(tag.name)) return false;
+      seenTags.add(tag.name);
+      return true;
+    })
+    .slice(0, 3);
+  const totalTagCount = new Set([...item.tags, ...item.aiTags.map((tag) => tag.name)]).size;
 
   const startPreview = () => {
     if (!item.previewUrl && !canPlay) return;
@@ -96,6 +108,17 @@ export function VideoCard({ item, layout, active, selected, onSelect, onOpen }: 
                 {tag}
               </span>
             ))}
+            {item.aiTags.length > 0 ? (
+              <span className="inline-flex items-center gap-0.5 rounded bg-blue/10 px-1 text-[10px] text-blue">
+                <Sparkles size={8} />
+                {item.aiTags.length}
+              </span>
+            ) : null}
+            {item.aiPendingCount > 0 ? (
+              <span className="rounded bg-yellow/10 px-1 text-[10px] text-yellow">
+                待审 {item.aiPendingCount}
+              </span>
+            ) : null}
           </div>
         </div>
         {item.status !== 'present' ? (
@@ -222,19 +245,30 @@ export function VideoCard({ item, layout, active, selected, onSelect, onOpen }: 
           ) : null}
           {item.fileSize ? <span className="font-mono">{formatBytes(item.fileSize)}</span> : null}
         </div>
-        {item.tags.length > 0 ? (
-          <div className="mt-1 flex flex-wrap gap-1 overflow-hidden">
-            {item.tags.slice(0, 3).map((tag) => (
+        {topTags.length > 0 || item.aiPendingCount > 0 ? (
+          <div className="mt-1 flex flex-wrap items-center gap-1 overflow-hidden">
+            {topTags.map((tag) => (
               <span
-                key={tag}
-                className="max-w-[90px] truncate rounded border border-line/60 bg-panel2 px-1 text-[10px] leading-4 text-muted"
-                title={tag}
+                key={`${tag.ai ? 'ai' : 'tag'}-${tag.name}`}
+                className={clsx(
+                  'inline-flex max-w-[96px] items-center gap-0.5 truncate rounded border px-1 text-[10px] leading-4',
+                  tag.ai
+                    ? 'border-blue/25 bg-blue/10 text-blue'
+                    : 'border-line/60 bg-panel2 text-muted'
+                )}
+                title={tag.ai ? `AI 标签：${tag.name}` : tag.name}
               >
-                {tag}
+                {tag.ai ? <Sparkles size={8} className="shrink-0" /> : null}
+                <span className="truncate">{tag.name}</span>
               </span>
             ))}
-            {item.tags.length > 3 ? (
-              <span className="text-[10px] leading-4 text-dim">+{item.tags.length - 3}</span>
+            {totalTagCount > topTags.length ? (
+              <span className="text-[10px] leading-4 text-dim">+{totalTagCount - topTags.length}</span>
+            ) : null}
+            {item.aiPendingCount > 0 ? (
+              <span className="rounded bg-yellow/10 px-1 text-[10px] leading-4 text-yellow">
+                待审 {item.aiPendingCount}
+              </span>
             ) : null}
           </div>
         ) : null}

@@ -670,7 +670,7 @@ export function SourcesView({
           </div>
         ) : null}
 
-        <div className="scroll-thin flex-1 overflow-y-auto p-4">
+        <div className="scroll-thin scroll-stable flex-1 overflow-y-auto p-4">
           {sources.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
               <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-line bg-panel2 text-dim">
@@ -1053,7 +1053,7 @@ export function SourcesView({
         </div>
       </div>
 
-      <div className="scroll-thin flex-1 overflow-y-auto">
+      <div className="scroll-thin scroll-stable flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex h-full items-center justify-center gap-2 text-[12px] text-dim">
             <Loader2 size={14} className="animate-spin" />

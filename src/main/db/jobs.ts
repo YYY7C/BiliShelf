@@ -1,4 +1,4 @@
-import type { DownloadJob, JobStatus, QualityPreset } from '@shared/types';
+import type { DownloadJob, JobStatus, JobStatusCounts, QualityPreset } from '@shared/types';
 import { all, one, run } from './index';
 
 export interface JobRow {
@@ -206,6 +206,31 @@ export function recoverInterruptedJobs(): number {
   return result.changes;
 }
 
+export function pauseQueuedJobs(): number {
+  const result = run(
+    `UPDATE download_jobs SET status = 'paused', speed = NULL, eta = NULL
+     WHERE status = 'queued'`
+  );
+  return result.changes;
+}
+
+export function listRunningJobIds(): number[] {
+  return all<{ id: number }>(
+    `SELECT id FROM download_jobs
+     WHERE status IN ('resolving','downloading','postprocessing')`
+  ).map((row) => row.id);
+}
+
+export function resumePausedJobs(): number {
+  const result = run(
+    `UPDATE download_jobs
+     SET status = 'queued', progress = 0, speed = NULL, eta = NULL,
+         error_code = NULL, error_message = NULL
+     WHERE status = 'paused'`
+  );
+  return result.changes;
+}
+
 export function clearFinishedJobs(): number {
   const result = run("DELETE FROM download_jobs WHERE status IN ('done','canceled','failed')");
   return result.changes;
@@ -242,4 +267,21 @@ export function activeJobCount(): number {
 
 export function jobQueuedCount(): number {
   return one<{ c: number }>("SELECT COUNT(*) AS c FROM download_jobs WHERE status = 'queued'")?.c ?? 0;
+}
+
+export function jobStatusCounts(): JobStatusCounts {
+  const row = one<Record<keyof JobStatusCounts, number | bigint | null>>(
+    `SELECT
+       SUM(CASE WHEN status IN ('resolving','downloading','postprocessing') THEN 1 ELSE 0 END) AS active,
+       SUM(CASE WHEN status IN ('resolving','downloading') THEN 1 ELSE 0 END) AS pausable,
+       SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END) AS queued,
+       SUM(CASE WHEN status = 'paused' THEN 1 ELSE 0 END) AS paused
+     FROM download_jobs`
+  );
+  return {
+    active: Number(row?.active ?? 0),
+    pausable: Number(row?.pausable ?? 0),
+    queued: Number(row?.queued ?? 0),
+    paused: Number(row?.paused ?? 0)
+  };
 }

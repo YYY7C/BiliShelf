@@ -1,7 +1,7 @@
-import clsx from 'clsx';
 import { ChevronDown, X } from 'lucide-react';
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from 'react';
 import { useEffect } from 'react';
+import { cn } from '../lib/cn';
 
 type Variant = 'primary' | 'ghost' | 'subtle' | 'danger';
 type Size = 'sm' | 'md';
@@ -29,7 +29,7 @@ export function Button({
   return (
     <button
       type="button"
-      className={clsx(
+      className={cn(
         'inline-flex select-none items-center justify-center font-medium transition-colors disabled:pointer-events-none disabled:opacity-40',
         VARIANTS[variant],
         SIZES[size],
@@ -53,7 +53,7 @@ export function IconButton({
       type="button"
       aria-label={label}
       title={label}
-      className={clsx(
+      className={cn(
         'inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent text-muted transition-colors',
         'hover:border-line hover:bg-panel2 hover:text-fg disabled:opacity-40',
         className
@@ -93,7 +93,7 @@ export function Chip({
       title={title}
       onClick={onClick}
       disabled={!onClick}
-      className={clsx(
+      className={cn(
         'inline-flex max-w-full items-center gap-1 truncate rounded-md border px-1.5 py-0.5 text-[11px] leading-5 transition-colors',
         tones[tone],
         active ? 'bg-panel3 text-fg' : 'bg-panel2/60',
@@ -125,7 +125,7 @@ export function Tag({
   };
   return (
     <span
-      className={clsx(
+      className={cn(
         'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] leading-4',
         tones[tone],
         className
@@ -138,7 +138,7 @@ export function Tag({
 
 export function ProgressBar({ value, className }: { value: number; className?: string }) {
   return (
-    <div className={clsx('h-1.5 w-full overflow-hidden rounded-full bg-panel3', className)}>
+    <div className={cn('h-1.5 w-full overflow-hidden rounded-full bg-panel3', className)}>
       <div
         className="h-full rounded-full bg-gradient-to-r from-pink to-blue transition-[width] duration-300"
         style={{ width: `${Math.max(0, Math.min(1, value)) * 100}%` }}
@@ -147,15 +147,7 @@ export function ProgressBar({ value, className }: { value: number; className?: s
   );
 }
 
-export function Field({
-  label,
-  hint,
-  children
-}: {
-  label: string;
-  hint?: string;
-  children: ReactNode;
-}) {
+export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className="text-[12px] font-medium text-muted">{label}</span>
@@ -168,8 +160,21 @@ export function Field({
 export function TextInput({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
-      className={clsx(
+      className={cn(
         'h-9 w-full rounded-lg border border-line bg-panel2 px-3 text-[13px] text-fg placeholder:text-dim',
+        'focus:border-blue/50 focus:outline-none focus:ring-2 focus:ring-blue/15',
+        className
+      )}
+      {...rest}
+    />
+  );
+}
+
+export function TextArea({ className, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return (
+    <textarea
+      className={cn(
+        'min-h-[90px] w-full resize-y rounded-lg border border-line bg-panel2 px-3 py-2 text-[12.5px] leading-5 text-fg placeholder:text-dim',
         'focus:border-blue/50 focus:outline-none focus:ring-2 focus:ring-blue/15',
         className
       )}
@@ -213,7 +218,8 @@ export function Select({
   );
 }
 
-export function Toggle({  checked,
+export function Toggle({
+  checked,
   onChange,
   label,
   hint
@@ -234,13 +240,13 @@ export function Toggle({  checked,
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
-        className={clsx(
+        className={cn(
           'relative mt-0.5 h-5 w-9 flex-none rounded-full border transition-colors',
           checked ? 'border-pink/50 bg-pink/70' : 'border-line bg-panel3'
         )}
       >
         <span
-          className={clsx(
+          className={cn(
             'absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all',
             checked ? 'left-[18px]' : 'left-0.5'
           )}
@@ -275,7 +281,7 @@ export function Modal({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
       <div
-        className={clsx(
+        className={cn(
           'relative flex max-h-[86vh] w-full flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-2xl',
           width
         )}
@@ -298,7 +304,7 @@ export function Modal({
 export function Spinner({ className }: { className?: string }) {
   return (
     <span
-      className={clsx(
+      className={cn(
         'inline-block h-4 w-4 animate-spin rounded-full border-2 border-line border-t-pink',
         className
       )}
@@ -317,6 +323,8 @@ export function SectionLabel({ children, right }: { children: ReactNode; right?:
 
 export function Kbd({ children }: { children: ReactNode }) {
   return (
-    <kbd className="rounded border border-line bg-panel2 px-1 font-mono text-[10px] text-muted">{children}</kbd>
+    <kbd className="rounded border border-line bg-panel2 px-1 font-mono text-[10px] text-muted">
+      {children}
+    </kbd>
   );
 }

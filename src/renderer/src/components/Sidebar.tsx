@@ -16,6 +16,7 @@ import {
   XCircle
 } from 'lucide-react';
 import type {
+  AiTagSummary,
   AuthStatus,
   EngineStatus,
   FolderSummary,
@@ -33,6 +34,8 @@ interface SidebarProps {
   onView: (view: View) => void;
   stats: LibraryStats | null;
   tags: TagSummary[];
+  aiTags: AiTagSummary[];
+  aiPending: number;
   folders: FolderSummary[];
   smart: SmartCollection[];
   sources: SourceSummary[];
@@ -73,7 +76,13 @@ function NavItem({
       <span
         className={clsx(
           'flex h-6 w-6 flex-none items-center justify-center rounded-md',
-          active ? 'bg-pink/15 text-pink' : tone === 'danger' ? 'text-red/80' : tone === 'warn' ? 'text-yellow/90' : 'text-dim'
+          active
+            ? 'bg-pink/15 text-pink'
+            : tone === 'danger'
+              ? 'text-red/80'
+              : tone === 'warn'
+                ? 'text-yellow/90'
+                : 'text-dim'
         )}
       >
         {icon}
@@ -91,6 +100,8 @@ export function Sidebar({
   onView,
   stats,
   tags,
+  aiTags,
+  aiPending,
   folders,
   smart,
   sources,
@@ -104,12 +115,14 @@ export function Sidebar({
   const filters = useUi((state) => state.filters);
   const patchFilters = useUi((state) => state.patchFilters);
   const setSettingsOpen = useUi((state) => state.setSettingsOpen);
+  const setAiTab = useUi((state) => state.setAiTab);
 
   const topTags = [...tags].sort((a, b) => b.count - a.count).slice(0, 10);
+  const topAiTags = [...aiTags].sort((a, b) => b.count - a.count).slice(0, 10);
   const engineOk = engines?.ready ?? false;
 
   /** 标签/文件夹/来源属于「细分筛选」，一旦启用就不再高亮左侧的作用域，保证同时只高亮一项。 */
-  const facetActive = Boolean(filters.tag || filters.folder || filters.sourceId);
+  const facetActive = Boolean(filters.tag || filters.aiTag || filters.folder || filters.sourceId);
 
   /** 作用域：状态 + 排序的组合，互斥。 */
   const pickStatus = (
@@ -117,11 +130,10 @@ export function Sidebar({
     sort: 'added' | 'recent' = 'added'
   ) => {
     onView('library');
-    patchFilters({ status, sort, sourceId: null, tag: null, folder: null });
+    patchFilters({ status, sort, sourceId: null, tag: null, aiTag: null, folder: null });
   };
 
-  const scopeActive = (status: string) =>
-    view === 'library' && !facetActive && filters.status === status;
+  const scopeActive = (status: string) => view === 'library' && !facetActive && filters.status === status;
 
   return (
     <aside className="sidebar-glass relative z-10 flex h-full w-[236px] flex-none flex-col border-r border-line2">
@@ -131,7 +143,7 @@ export function Sidebar({
         </div>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold leading-4 text-fg">BiliShelf</div>
-          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.2.2'}</div>
+          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.3.0'}</div>
         </div>
       </div>
 
@@ -149,6 +161,16 @@ export function Sidebar({
           count={activeJobs || undefined}
           active={view === 'tasks'}
           onClick={() => onView('tasks')}
+        />
+        <NavItem
+          icon={<Sparkles size={14} />}
+          label="AI 打标"
+          count={aiPending || undefined}
+          active={view === 'ai'}
+          onClick={() => {
+            onView('ai');
+            setAiTab('overview');
+          }}
         />
       </nav>
 
@@ -222,6 +244,7 @@ export function Sidebar({
                   patchFilters({
                     folder: filters.folder === folder.name ? null : folder.name,
                     tag: null,
+                    aiTag: null,
                     sourceId: null
                   });
                 }}
@@ -243,6 +266,7 @@ export function Sidebar({
                   onView('library');
                   patchFilters({
                     tag: collection.query.tag ?? null,
+                    aiTag: collection.query.aiTag ?? null,
                     folder: collection.query.folder ?? null,
                     status: collection.query.status ?? 'all',
                     sort: collection.query.sort ?? 'added',
@@ -267,6 +291,7 @@ export function Sidebar({
                     onView('library');
                     patchFilters({
                       tag: filters.tag === tag.name ? null : tag.name,
+                      aiTag: null,
                       folder: null,
                       sourceId: null
                     });
@@ -286,6 +311,47 @@ export function Sidebar({
             </div>
           </>
         ) : null}
+
+        {topAiTags.length > 0 ? (
+          <>
+            <SectionLabel
+              right={
+                aiPending > 0 ? (
+                  <span className="font-mono text-[10px] text-yellow">{aiPending} 待审</span>
+                ) : undefined
+              }
+            >
+              本地标签
+            </SectionLabel>
+            <div className="flex flex-wrap gap-1 px-2 pt-1">
+              {topAiTags.map((tag) => (
+                <button
+                  key={tag.id}
+                  type="button"
+                  onClick={() => {
+                    onView('library');
+                    patchFilters({
+                      aiTag: filters.aiTag === tag.name ? null : tag.name,
+                      tag: null,
+                      folder: null,
+                      sourceId: null
+                    });
+                  }}
+                  className={clsx(
+                    'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] transition-colors',
+                    filters.aiTag === tag.name
+                      ? 'border-blue/40 bg-blue/15 text-blue'
+                      : 'border-line/60 bg-panel2/60 text-muted hover:text-fg'
+                  )}
+                  title={`${tag.category} · ${tag.count} 个素材`}
+                >
+                  <Sparkles size={9} />
+                  {tag.name}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
       </div>
 
       <div className="border-t border-line2 px-2 py-2">
@@ -299,9 +365,7 @@ export function Sidebar({
           title={engineOk ? '引擎就绪' : '引擎未就绪，点击设置'}
         >
           <span className={clsx('h-1.5 w-1.5 flex-none rounded-full', engineOk ? 'bg-green' : 'bg-yellow')} />
-          <span className="min-w-0 flex-1 truncate">
-            {engineOk ? '引擎就绪' : '引擎未配置'}
-          </span>
+          <span className="min-w-0 flex-1 truncate">{engineOk ? '引擎就绪' : '引擎未配置'}</span>
           <Settings size={13} />
         </button>
 

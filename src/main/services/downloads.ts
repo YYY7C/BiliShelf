@@ -145,7 +145,11 @@ class DownloadManager {
   }
 
   private emit(): void {
-    const snapshot: JobsSnapshot = { items: jobsRepo.listJobs(), total: jobsRepo.jobTotalCount() };
+    const snapshot: JobsSnapshot = {
+      items: jobsRepo.listJobs(),
+      total: jobsRepo.jobTotalCount(),
+      counts: jobsRepo.jobStatusCounts()
+    };
     for (const listener of this.listeners) {
       try {
         listener(snapshot);
@@ -204,7 +208,8 @@ class DownloadManager {
         sourceId: input.sourceId ?? remote?.source_id ?? null,
         remoteItemId: input.remoteItemId ?? null,
         quality: input.quality ?? quality,
-        upgradeVideoId: input.upgradeVideoId ?? null
+        upgradeVideoId: input.upgradeVideoId ?? null,
+        priority: input.priority ?? 0
       });
       queued += 1;
     }
@@ -231,6 +236,9 @@ class DownloadManager {
     if (child) {
       this.intents.set(id, 'pause');
       child.kill();
+    } else if (job.status === 'resolving' || job.status === 'downloading') {
+      // 子进程尚未创建（例如正在导出 cookies），由 run() 启动前检查并暂停。
+      this.intents.set(id, 'pause');
     }
     this.emit();
   }
@@ -247,6 +255,30 @@ class DownloadManager {
     });
     this.emit();
     this.pump();
+  }
+
+  /** 暂停所有排队与正在下载的任务；后处理中的任务短暂且不可中断，让其完成。 */
+  pauseAll(): number {
+    let paused = jobsRepo.pauseQueuedJobs();
+    for (const id of jobsRepo.listRunningJobIds()) {
+      const job = jobsRepo.getJob(id);
+      if (!job || (job.status !== 'resolving' && job.status !== 'downloading')) continue;
+      this.intents.set(id, 'pause');
+      this.children.get(id)?.kill();
+      paused += 1;
+    }
+    this.emit();
+    return paused;
+  }
+
+  /** 只恢复暂停中的任务，失败/取消的任务仍需单独重试。 */
+  resumeAll(): number {
+    const resumed = jobsRepo.resumePausedJobs();
+    if (resumed > 0) {
+      this.emit();
+      this.pump();
+    }
+    return resumed;
   }
 
   cancel(id: number): void {
@@ -340,6 +372,12 @@ class DownloadManager {
 
     try {
       cookiesFile = await exportCookiesFile();
+      if (this.intents.get(job.id) === 'pause') {
+        this.intents.delete(job.id);
+        jobsRepo.updateJob(job.id, { status: 'paused', speed: null, eta: null });
+        this.emit();
+        return;
+      }
       const { child, done } = downloadVideo({
         url: buildUrl(job.bvid, job.page),
         outputDir: stagingDir,
@@ -500,7 +538,13 @@ class DownloadManager {
           await fsp.copyFile(files.thumbnail, coverPath);
         }
         if (fs.existsSync(coverPath)) {
-          setAsset(videoId, 'cover', toLibraryRelative(paths.root, coverPath), fs.statSync(coverPath).size, 'image/jpeg');
+          setAsset(
+            videoId,
+            'cover',
+            toLibraryRelative(paths.root, coverPath),
+            fs.statSync(coverPath).size,
+            'image/jpeg'
+          );
         }
       } catch (error) {
         log.warn('[downloads] cover copy failed', (error as Error).message);
@@ -516,7 +560,13 @@ class DownloadManager {
     if (thumbOk) {
       const finalThumb = fs.existsSync(thumbWebp) ? thumbWebp : thumbWebp.replace(/\.webp$/i, '.jpg');
       if (fs.existsSync(finalThumb)) {
-        setAsset(videoId, 'thumb', toLibraryRelative(paths.root, finalThumb), fs.statSync(finalThumb).size, 'image/webp');
+        setAsset(
+          videoId,
+          'thumb',
+          toLibraryRelative(paths.root, finalThumb),
+          fs.statSync(finalThumb).size,
+          'image/webp'
+        );
         const staleThumb = finalThumb === thumbWebp ? thumbWebp.replace(/\.webp$/i, '.jpg') : thumbWebp;
         if (staleThumb !== finalThumb) await fsp.rm(staleThumb, { force: true }).catch(() => undefined);
       }
@@ -538,7 +588,13 @@ class DownloadManager {
       if (xml) {
         const danmakuPath = path.join(outputDir, 'danmaku.xml');
         await fsp.writeFile(danmakuPath, xml, 'utf8');
-        setAsset(videoId, 'danmaku', toLibraryRelative(paths.root, danmakuPath), Buffer.byteLength(xml), 'application/xml');
+        setAsset(
+          videoId,
+          'danmaku',
+          toLibraryRelative(paths.root, danmakuPath),
+          Buffer.byteLength(xml),
+          'application/xml'
+        );
       }
     }
 

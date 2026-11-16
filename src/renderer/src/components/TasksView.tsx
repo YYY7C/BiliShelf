@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import clsx from 'clsx';
 import {
   AlertTriangle,
@@ -13,7 +14,7 @@ import {
   Trash2,
   X
 } from 'lucide-react';
-import type { DownloadJob } from '@shared/types';
+import type { DownloadJob, JobStatusCounts } from '@shared/types';
 import { formatEta, formatRelative, formatSpeed } from '../lib/format';
 import { api } from '../lib/bridge';
 import { useUi } from '../lib/store';
@@ -22,6 +23,7 @@ import { Button, IconButton, ProgressBar, Tag } from './ui';
 interface TasksViewProps {
   jobs: DownloadJob[];
   total: number;
+  counts: JobStatusCounts;
   engineReady: boolean;
   onRefresh: () => void;
 }
@@ -51,10 +53,12 @@ function StatusIcon({ status }: { status: string }) {
   return <Clock size={13} className="text-dim" />;
 }
 
-export function TasksView({ jobs, total, engineReady, onRefresh }: TasksViewProps) {
+export function TasksView({ jobs, total, counts, engineReady, onRefresh }: TasksViewProps) {
   const pushToast = useUi((state) => state.pushToast);
   const patchFilters = useUi((state) => state.patchFilters);
   const setView = useUi((state) => state.setView);
+
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const active = jobs.filter((job) => ['downloading', 'postprocessing', 'resolving'].includes(job.status));
   const queued = jobs.filter((job) => job.status === 'queued');
@@ -70,6 +74,19 @@ export function TasksView({ jobs, total, engineReady, onRefresh }: TasksViewProp
     }
   };
 
+  const bulkAct = async (fn: () => Promise<number>, done: (count: number) => string) => {
+    setBulkBusy(true);
+    try {
+      const count = await fn();
+      onRefresh();
+      pushToast(count > 0 ? 'success' : 'info', done(count));
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const groups: Array<{ title: string; hint: string; items: DownloadJob[] }> = [
     { title: '进行中', hint: '同一时间按设置的并发数执行', items: active },
     { title: '队列', hint: '等待中的任务', items: queued },
@@ -80,10 +97,38 @@ export function TasksView({ jobs, total, engineReady, onRefresh }: TasksViewProp
     <div className="flex h-full flex-col">
       <div className="flex flex-none items-center gap-2 border-b border-line2 px-4 py-2.5">
         <div className="text-[11.5px] text-dim">
-          共 {total} 个任务 · 进行中 {active.length} · 排队 {queued.length}
+          共 {total} 个任务 · 进行中 {counts.active} · 排队 {counts.queued} · 已暂停 {counts.paused}
           {total > jobs.length ? ` · 仅显示最近 ${jobs.length} 条` : ''}
         </div>
         <div className="ml-auto flex items-center gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={bulkBusy || counts.paused === 0}
+            onClick={() =>
+              void bulkAct(
+                () => api.jobs.resumeAll(),
+                (count) => (count > 0 ? `已开始 ${count} 个任务` : '没有暂停中的任务')
+              )
+            }
+          >
+            <Play size={12} />
+            全部开始
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={bulkBusy || counts.pausable + counts.queued === 0}
+            onClick={() =>
+              void bulkAct(
+                () => api.jobs.pauseAll(),
+                (count) => (count > 0 ? `已暂停 ${count} 个任务` : '没有可暂停的任务')
+              )
+            }
+          >
+            <Pause size={12} />
+            全部暂停
+          </Button>
           <Button variant="ghost" size="sm" onClick={onRefresh}>
             <RotateCcw size={12} />
             刷新
@@ -106,7 +151,7 @@ export function TasksView({ jobs, total, engineReady, onRefresh }: TasksViewProp
         </div>
       ) : null}
 
-      <div className="scroll-thin flex-1 overflow-y-auto px-4 py-3">
+      <div className="scroll-thin scroll-stable flex-1 overflow-y-auto px-4 py-3">
         {jobs.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
             <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-line bg-panel2 text-dim">
@@ -128,7 +173,7 @@ export function TasksView({ jobs, total, engineReady, onRefresh }: TasksViewProp
                   <span className="text-[10.5px] text-dim">{group.hint}</span>
                   <span className="ml-auto font-mono text-[10.5px] text-dim">{group.items.length}</span>
                 </div>
-                <ul className="space-y-1.5">
+                <ul className={clsx('grid gap-1.5', group.items.length > 1 && 'xl:grid-cols-2')}>
                   {group.items.map((job) => {
                     const meta = STATUS_META[job.status] ?? { label: job.status, tone: 'default' as const };
                     const running = ['downloading', 'postprocessing', 'resolving'].includes(job.status);

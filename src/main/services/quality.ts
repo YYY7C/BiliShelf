@@ -9,6 +9,8 @@ import { downloadManager } from './downloads';
 
 const SCAN_LIMIT = 200;
 const PROBE_GAP_MS = 300;
+// 升级任务优先于批量下载，避免排在几千个新下载之后
+const UPGRADE_PRIORITY = 100;
 
 interface QualityRow {
   id: number;
@@ -168,7 +170,8 @@ export async function enqueueQualityUpgrades(videoIds: number[]): Promise<{ queu
         sourceId: video.source_id,
         remoteItemId: video.remote_item_id,
         quality: 'best',
-        upgradeVideoId: video.id
+        upgradeVideoId: video.id,
+        priority: UPGRADE_PRIORITY
       }
     ]);
     queued += result.queued;

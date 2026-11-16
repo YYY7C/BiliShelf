@@ -64,17 +64,19 @@ powershell -ExecutionPolicy Bypass -File scripts\prepare-engines.ps1 -Proxy http
 ```
 src/
 ├─ main/                 主进程
-│  ├─ db/                node:sqlite 连接、迁移、videos/tags/sources/jobs 仓储
+│  ├─ db/                node:sqlite 连接、迁移、videos/tags/sources/jobs/ai 仓储
 │  ├─ engine/            yt-dlp 进程封装、工具探测
 │  ├─ services/          下载队列、来源同步、登录、媒体处理、sidecar、NFO
-│  ├─ protocol.ts        bilishelf://（Range / CORS / 路径校验）
+│  │  └─ ai/             Provider、抽帧、提示词、ACRCloud、打标队列、库级分析、审核
+│  ├─ protocol.ts        bilishelf://（Range / CORS / 路径校验 / AI 抽帧）
 │  ├─ ipc.ts             IPC 契约与 zod 校验
-│  ├─ store.ts           userData/config.json（库路径、画质、引擎路径）
+│  ├─ store.ts           userData/config.json（库路径、画质、引擎路径、AI 参数）
 │  └─ index.ts           窗口、CSP、安全策略、生命周期
 ├─ preload/              contextBridge 白名单 API
-├─ shared/               主进程 ↔ 渲染进程类型与通道常量
+├─ shared/               主进程 ↔ 渲染进程类型、通道常量、AI 纯函数
 └─ renderer/src/
    ├─ components/        侧栏、顶栏、网格、检查器、播放器、来源、任务、设置
+   │  └─ ai/             AI 页、审核页、标签方案、模型与工具、库级分析
    ├─ lib/               bridge（含浏览器演示数据）、格式化、弹幕解析、zustand store
    └─ App.tsx
 ```
@@ -90,13 +92,16 @@ src/
 │  ├─ subtitle.srt
 │  ├─ danmaku.xml
 │  ├─ movie.nfo               （可选）
-│  └─ metadata.json           sidecar：标题/UP/来源/标签/文件夹/评分/备注
+│  └─ metadata.json           sidecar：标题/UP/来源/标签/文件夹/评分/备注/AI 标签
 ├─ cache/covers/              640px JPEG 封面缓存
 ├─ cache/thumbnails/          640px 封面缩略图 / 4 秒悬停预览
+├─ cache/ai/                  AI 抽帧 + 15 秒音频片段缓存（可清理）
 ├─ cache/temp/                cookies / 下载暂存（任务结束即删）
 ├─ backups/
 └─ logs/
 ```
+
+AI 标签只写 `metadata.json` 的 `aiTags` / `aiTaggedAt`，不写 NFO；重建索引时只恢复已通过的 AI 标签，审核历史不恢复。
 
 默认库路径 = **程序启动目录**（开发模式即项目目录，打包后在 exe 同级；若不可写会退回 `%APPDATA%`）。
 在「设置 → 素材库」可以一键迁移到别处（会连同 `media/`、数据库、缓存一起搬走）。
@@ -110,6 +115,49 @@ src/
 3. **先清单后下载**：同步只拉列表与元数据，勾选后才入队；降低风控、带宽与存储压力。
 4. **安全边界**：渲染进程沙箱 + contextIsolation；文件只通过 `bilishelf://` 暴露，并做路径穿越校验；Cookie 只在主进程使用，导出给 yt-dlp 的临时文件任务后删除。
 5. **不绕过访问控制**：只处理当前账号可正常播放的内容；遇到会员/付费/地区限制直接跳过并提示。
+
+## AI 打标实现
+
+主要文件：
+
+```
+src/main/db/ai.ts                 AI 方案 / 批次 / 运行 / 标签 / 审核 / 分析仓储
+src/main/services/ai/defaults.ts  默认方案、提示词、分类体系
+src/main/services/ai/config.ts    加密的 Provider / ACRCloud 配置
+src/main/services/ai/providers.ts OpenAI / Anthropic / Gemini / 自定义适配器
+src/main/services/ai/frames.ts    封面/视频帧/音频抽取 + 缓存 + 清理
+src/main/services/ai/prompt.ts    模板渲染、BGM 线索
+src/main/services/ai/normalize.ts JSON 解析、别名/停用词/去重/BGM 展开
+src/main/services/ai/acrcloud.ts  ACRCloud 签名、识别、缓存
+src/main/services/ai/tagging.ts   打标队列、并发、重试、取消、恢复
+src/main/services/ai/analysis.ts  库级采样、文本聚类、视觉校验、方案生成
+src/main/services/ai/review.ts    审核入库 + sidecar + FTS
+```
+
+迁移 **9** 新增：
+
+- `ai_tag_profiles`：全局/来源方案
+- `ai_batches` / `ai_runs` / `ai_run_tags`：批次、单视频运行、审核前标签
+- `ai_tags` / `video_ai_tags`：审核通过的标签词典与视频关联
+- `ai_music_cache`：ACRCloud 音频 hash 结果缓存
+- `ai_analysis_runs`：库级分析历史
+
+关键约定：
+
+- **Provider 配置在 userData**：`ai-config.json` 里的 Key / Secret / 请求头用 `safeStorage` 加密；渲染进程只拿得到 `hasApiKey` / 末 4 位。
+- **方案在数据库**：随素材库走；换库/重建时方案仍在 `library.db`。
+- **抽帧协议**：`bilishelf://ai/<runId>/<index>`，index `-1` 表示封面；路径必须落在素材库根目录内。
+- **队列**：默认并发 2；429/5xx/超时按指数退避；应用退出时运行中的 run 回到 `queued`，下次启动继续。
+- **审核门禁**：模型结果先写 `ai_run_tags(status=pending)`；通过后才 upsert `ai_tags` / `video_ai_tags`，再写 sidecar 和 FTS。
+- **工具调用**：ACRCloud 通过 function calling 暴露给模型；自定义 Provider 的 OpenAI/Anthropic/Gemini 兼容模式支持工具，纯模板模式不支持。
+- **库级分析**：默认 24 条，文本聚类 + 代表视频视觉校验；结果保存为方案后才参与打标。
+
+新增/修改的测试：
+
+- `src/shared/aiFrame.test.ts`：均匀取帧
+- `src/shared/acrcloud.test.ts`：ACRCloud 签名向量
+- `src/main/services/ai/normalize.test.ts`：JSON 解析、别名、停用词、BGM 展开
+- `src/main/services/ai/prompt.test.ts`：模板变量、BGM 线索、hash 稳定性
 
 ## 开发工具
 

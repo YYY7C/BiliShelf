@@ -10,25 +10,10 @@ export type VideoStatus = 'present' | 'missing' | 'unavailable' | 'trashed' | 'i
 export type RemoteState = 'available' | 'unavailable' | 'unknown';
 
 export type JobStatus =
-  | 'queued'
-  | 'resolving'
-  | 'downloading'
-  | 'postprocessing'
-  | 'done'
-  | 'failed'
-  | 'paused'
-  | 'canceled';
+  'queued' | 'resolving' | 'downloading' | 'postprocessing' | 'done' | 'failed' | 'paused' | 'canceled';
 
 export type AssetType =
-  | 'video'
-  | 'cover'
-  | 'thumb'
-  | 'preview'
-  | 'subtitle'
-  | 'danmaku'
-  | 'nfo'
-  | 'audio'
-  | 'image';
+  'video' | 'cover' | 'thumb' | 'preview' | 'subtitle' | 'danmaku' | 'nfo' | 'audio' | 'image';
 
 export type SortKey = 'added' | 'recent' | 'title' | 'duration' | 'size' | 'rating';
 
@@ -73,11 +58,21 @@ export interface VideoItem {
   sourceName: string | null;
   hasDanmaku: boolean;
   hasSubtitle: boolean;
+  /** 审核通过的 AI 标签（独立于普通 tags） */
+  aiTags: AiTagRef[];
+  /** 待审核的 AI 标签数量 */
+  aiPendingCount: number;
+  /** 最近一次 AI 打标的一句话摘要 */
+  aiSummary: string | null;
+  /** 最近一次 AI 打标时间 */
+  aiLastRunAt: string | null;
 }
 
 export interface LibraryQuery {
   search?: string;
   tag?: string;
+  /** 已通过审核的 AI 标签名 */
+  aiTag?: string;
   folder?: string;
   status?: VideoStatus | 'all';
   sourceId?: number;
@@ -98,6 +93,7 @@ export interface LibraryStats {
   unavailable: number;
   trashed: number;
   withTags: number;
+  withAiTags: number;
   totalBytes: number;
 }
 
@@ -192,6 +188,8 @@ export interface EnqueueInput {
   remoteItemId?: number | null;
   quality?: QualityPreset;
   upgradeVideoId?: number | null;
+  /** 数值越大越先执行；画质升级用高优先级插到批量下载前面。 */
+  priority?: number;
 }
 
 export interface QualityCandidate {
@@ -220,9 +218,17 @@ export interface QualityScanProgress {
   title: string;
 }
 
+export interface JobStatusCounts {
+  active: number;
+  pausable: number;
+  queued: number;
+  paused: number;
+}
+
 export interface JobsSnapshot {
   items: DownloadJob[];
   total: number;
+  counts: JobStatusCounts;
 }
 
 export interface SyncProgress {
@@ -303,9 +309,29 @@ export interface AppSettings {
   coverBackdropDim: number;
   /** 侧边栏透明玻璃效果 */
   sidebarTransparent: boolean;
+  /** 关闭窗口时收进托盘，应用继续在后台下载 / 打标 */
+  closeToTray: boolean;
   ytdlpPath: string;
   ffmpegPath: string;
   requestDelayMs: number;
+  /** AI 打标每视频抽帧数（不含封面） */
+  aiFrameCount: number;
+  /** AI 抽帧最大边长 */
+  aiFrameWidth: number;
+  /** 是否把封面一起发给 VLM */
+  aiIncludeCover: boolean;
+  /** AI 打标并发 */
+  aiConcurrency: number;
+  /** AI 请求间隔（毫秒） */
+  aiRequestDelayMs: number;
+  /** AI 请求超时（毫秒） */
+  aiTimeoutMs: number;
+  /** AI 请求最大重试次数 */
+  aiMaxRetries: number;
+  /** 单次打标最多工具轮次 */
+  aiMaxToolRounds: number;
+  /** AI 抽帧/音频缓存保留天数 */
+  aiCacheDays: number;
 }
 
 export interface AppInfo {
@@ -371,4 +397,499 @@ export interface MaintenanceResult {
 
 export interface AppInfoResponse extends AppInfo {
   engines: EngineStatus;
+}
+
+/* ---------------------------------- AI ---------------------------------- */
+
+export type AiProtocol = 'openai' | 'anthropic' | 'gemini' | 'custom';
+export type AiCustomCompatMode = 'openai' | 'anthropic' | 'gemini' | 'template';
+export type AiTagSource = 'vision' | 'acrcloud' | 'bilibili_tag' | 'inferred';
+export type AiRunStatus = 'queued' | 'running' | 'done' | 'failed' | 'canceled';
+export type AiReviewStatus = 'pending' | 'partial' | 'approved' | 'rejected';
+export type AiTagStatus = 'pending' | 'approved' | 'rejected' | 'superseded';
+export type AiBatchStatus = 'queued' | 'running' | 'paused' | 'done' | 'canceled';
+export type AiStage = 'frames' | 'request' | 'tools' | 'parse' | 'done';
+export type AiImageDetail = 'low' | 'auto' | 'high';
+
+export interface AiCapabilities {
+  vision: boolean;
+  tools: boolean;
+  jsonMode: boolean;
+  audio: boolean;
+}
+
+export interface AiPricing {
+  inputPerMillion: number;
+  outputPerMillion: number;
+  currency: string;
+}
+
+export interface AiCustomConfig {
+  compatMode: AiCustomCompatMode;
+  bodyTemplate?: string;
+  responsePath?: string;
+}
+
+export interface AiProviderSummary {
+  id: string;
+  name: string;
+  protocol: AiProtocol;
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+  apiKeyHint: string | null;
+  headerKeys: string[];
+  capabilities: AiCapabilities;
+  temperature: number;
+  maxTokens: number;
+  timeoutMs: number;
+  maxRetries: number;
+  imageDetail: AiImageDetail;
+  pricing: AiPricing | null;
+  isDefault: boolean;
+  custom: AiCustomConfig | null;
+}
+
+export interface AiProviderInput {
+  id?: string;
+  name: string;
+  protocol: AiProtocol;
+  baseUrl: string;
+  model: string;
+  apiKey?: string;
+  clearApiKey?: boolean;
+  headers?: Record<string, string>;
+  capabilities: AiCapabilities;
+  temperature: number;
+  maxTokens: number;
+  timeoutMs: number;
+  maxRetries: number;
+  imageDetail: AiImageDetail;
+  pricing?: AiPricing | null;
+  custom?: AiCustomConfig | null;
+  isDefault?: boolean;
+}
+
+export interface AiProviderTestResult {
+  ok: boolean;
+  latencyMs: number;
+  status: number | null;
+  message: string;
+  visionOk: boolean | null;
+  jsonOk: boolean | null;
+  raw: string | null;
+}
+
+export interface AiModelInfo {
+  id: string;
+  name: string;
+  vision?: boolean;
+  tools?: boolean;
+  jsonMode?: boolean;
+  maxOutputTokens?: number;
+  contextWindow?: number;
+  pricing?: AiPricing | null;
+  inputModalities?: string[];
+}
+
+export interface AiModelProbeResult {
+  models: AiModelInfo[];
+  message: string;
+}
+
+export interface AcrCloudSummary {
+  configured: boolean;
+  enabled: boolean;
+  host: string;
+  accessKeyHint: string | null;
+  hasSecret: boolean;
+  callsToday: number;
+}
+
+export interface AcrCloudInput {
+  enabled?: boolean;
+  host?: string;
+  accessKey?: string;
+  accessSecret?: string;
+  clearSecret?: boolean;
+}
+
+export interface AcrCloudTestResult {
+  ok: boolean;
+  latencyMs: number;
+  status: number | null;
+  message: string;
+  code: number | null;
+}
+
+export interface AiTaxonomyCategory {
+  name: string;
+  description?: string;
+  examples?: string[];
+}
+
+export interface AiTaxonomy {
+  categories: AiTaxonomyCategory[];
+  stopwords: string[];
+  aliases: Record<string, string>;
+}
+
+export interface AiTagProfile {
+  id: number;
+  name: string;
+  description: string;
+  scope: 'global' | 'source';
+  sourceId: number | null;
+  sourceName: string | null;
+  isDefault: boolean;
+  focus: string[];
+  taxonomy: AiTaxonomy;
+  systemPrompt: string;
+  promptTemplate: string;
+  maxTags: number;
+  minConfidence: number;
+  language: string;
+  useAcrcloud: boolean;
+  useBilibiliTags: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiTagProfileInput {
+  id?: number;
+  name: string;
+  description?: string;
+  scope: 'global' | 'source';
+  sourceId?: number | null;
+  isDefault?: boolean;
+  focus: string[];
+  taxonomy: AiTaxonomy;
+  systemPrompt: string;
+  promptTemplate: string;
+  maxTags: number;
+  minConfidence: number;
+  language: string;
+  useAcrcloud: boolean;
+  useBilibiliTags: boolean;
+}
+
+export interface AiFrame {
+  index: number;
+  time: number;
+  url: string;
+}
+
+export interface AiBgmResult {
+  title: string | null;
+  artists: string[];
+  genres: string[];
+  source: AiTagSource;
+  confidence: number;
+}
+
+export interface AiTagRef {
+  name: string;
+  category: string;
+  confidence: number;
+  source: AiTagSource;
+}
+
+export interface AiTagSummary {
+  id: number;
+  name: string;
+  category: string;
+  count: number;
+  source: AiTagSource | 'mixed';
+}
+
+export interface AiBatch {
+  id: number;
+  profileName: string | null;
+  providerName: string | null;
+  model: string | null;
+  total: number;
+  done: number;
+  failed: number;
+  requestCount: number;
+  musicRequestCount: number;
+  status: AiBatchStatus;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface AiQueueSnapshot {
+  batches: AiBatch[];
+  pendingReview: number;
+  running: number;
+}
+
+export interface AiProgress {
+  batchId: number;
+  runId: number;
+  videoId: number;
+  title: string;
+  stage: AiStage;
+  done: number;
+  total: number;
+}
+
+export interface AiReviewTag {
+  id: number;
+  category: string;
+  name: string;
+  confidence: number;
+  source: AiTagSource;
+  status: AiTagStatus;
+  evidence: string | null;
+  edited: boolean;
+}
+
+export interface AiReviewItem {
+  runId: number;
+  videoId: number;
+  videoTitle: string;
+  upName: string | null;
+  sourceName: string | null;
+  duration: number | null;
+  coverUrl: string | null;
+  reviewStatus: AiReviewStatus;
+  frames: AiFrame[];
+  originalTags: Array<{ name: string; source: 'manual' | 'auto' }>;
+  aiTags: AiReviewTag[];
+  summary: string | null;
+  bgm: AiBgmResult | null;
+  profileName: string | null;
+  providerName: string | null;
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  requestCount: number;
+  musicRequestCount: number;
+  createdAt: string;
+}
+
+export interface AiReviewPage {
+  items: AiReviewItem[];
+  total: number;
+}
+
+export interface AiReviewCounts {
+  pending: number;
+  approved: number;
+  rejected: number;
+}
+
+export interface AiConsentState {
+  acceptedAt: string | null;
+  hosts: string[];
+}
+
+export interface AiConsentPreview {
+  hosts: string[];
+  required: boolean;
+}
+
+export interface AiStats {
+  taggedVideos: number;
+  pendingTags: number;
+  approvedTags: number;
+  failedRuns: number;
+  inputTokens: number;
+  outputTokens: number;
+  modelRequests: number;
+  musicRequests: number;
+}
+
+export interface AiReviewQuery {
+  status?: AiReviewStatus | 'all';
+  profileId?: number;
+  sourceId?: number;
+  videoId?: number;
+  search?: string;
+  minConfidence?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AiReviewDecision {
+  runIds: number[];
+  tagIds?: number[];
+}
+
+export interface AiReviewResult {
+  approved: number;
+  rejected: number;
+  affectedVideos: number;
+  videoIds: number[];
+}
+
+export interface AiReviewTagPatch {
+  tagId: number;
+  name?: string;
+  category?: string;
+  confidence?: number;
+}
+
+export interface AiReviewTagAdd {
+  runId: number;
+  category: string;
+  name: string;
+  confidence?: number;
+}
+
+export interface AiReviewTagRemove {
+  tagId: number;
+}
+
+export interface AiReviewTagRestore {
+  tagId: number;
+}
+
+export interface AiReviewUnapproveInput {
+  videoId: number;
+  name: string;
+  category: string;
+}
+
+export interface AiEnqueueScope {
+  type: 'all' | 'filter' | 'source';
+  filter?: LibraryQuery;
+  sourceId?: number;
+}
+
+export interface AiEnqueueInput {
+  videoIds?: number[];
+  scope?: AiEnqueueScope;
+  profileId?: number;
+  force?: boolean;
+  limit?: number;
+}
+
+export interface AiEnqueueResult {
+  batchId: number;
+  queued: number;
+  skipped: number;
+}
+
+export interface AiRunSummary {
+  id: number;
+  batchId: number | null;
+  videoId: number;
+  videoTitle: string;
+  coverUrl: string | null;
+  profileId: number | null;
+  profileName: string | null;
+  providerId: string | null;
+  providerName: string | null;
+  model: string | null;
+  status: AiRunStatus;
+  stage: AiStage | null;
+  reviewStatus: AiReviewStatus;
+  error: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  requestCount: number;
+  musicRequestCount: number;
+  frames: AiFrame[];
+  startedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+}
+
+export interface AiRunDetail extends AiRunSummary {
+  systemPrompt: string | null;
+  userPrompt: string | null;
+  rawResponse: string | null;
+  result: {
+    summary?: string;
+    tags?: Array<{ name: string; category: string; confidence: number; evidence?: string }>;
+    bgm?: AiBgmResult | null;
+  } | null;
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    args: unknown;
+    result: unknown;
+    error?: string;
+  }>;
+}
+
+export interface AiRunQuery {
+  batchId?: number;
+  status?: AiRunStatus | 'all';
+  limit?: number;
+  offset?: number;
+}
+
+export interface AiRunPage {
+  items: AiRunSummary[];
+  total: number;
+}
+
+export interface AiAnalysisInput {
+  mode: 'text' | 'vision' | 'hybrid';
+  sampleMode: 'random' | 'source' | 'up' | 'manual';
+  sampleSize: number;
+  videoIds?: number[];
+  providerId?: string;
+  model?: string;
+  profileId?: number;
+  instructions?: string;
+}
+
+export interface AiAnalysisEstimate {
+  videos: number;
+  requests: number;
+  imageCount: number;
+  approxInputTokens: number;
+  approxOutputTokens: number;
+  warnings: string[];
+}
+
+export interface AiAnalysisSample {
+  videoId: number;
+  title: string;
+  coverUrl: string | null;
+}
+
+export interface AiAnalysisResult {
+  summary: string;
+  categories: Array<{ name: string; description: string; tags: string[]; coverage?: number }>;
+  focus: string[];
+  stopwords: string[];
+  aliases: Record<string, string>;
+  systemPrompt: string;
+  promptTemplate: string;
+  notes: string[];
+}
+
+export interface AiAnalysisRun {
+  id: number;
+  mode: 'text' | 'vision' | 'hybrid';
+  status: AiRunStatus;
+  providerName: string | null;
+  model: string | null;
+  sample: AiAnalysisSample[];
+  result: AiAnalysisResult | null;
+  inputTokens: number;
+  outputTokens: number;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+export interface AiAnalysisProgress {
+  stage: 'text' | 'vision' | 'merge';
+  done: number;
+  total: number;
+  message: string;
+}
+
+export interface AiAnalysisSaveInput {
+  runId: number;
+  name: string;
+  scope: 'global' | 'source';
+  sourceId?: number | null;
+  isDefault?: boolean;
 }

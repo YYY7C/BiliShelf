@@ -7,6 +7,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Sparkles,
   Star,
   Trash2,
   X
@@ -14,6 +15,7 @@ import {
 import { useEffect, useState } from 'react';
 import type { VideoItem } from '@shared/types';
 import { formatBytes, formatDate, formatDuration, codecLabel, resolutionLabel } from '../lib/format';
+import { AI_TAG_SOURCE_LABEL, categoryClass, formatConfidence } from '../lib/ai';
 import { api } from '../lib/bridge';
 import { useUi } from '../lib/store';
 import { Button, IconButton, SectionLabel, Tag, TextInput } from './ui';
@@ -38,8 +40,16 @@ function MetaRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, onRefresh, onPlay }: InspectorProps) {
+export function Inspector({
+  item,
+  tagSuggestions,
+  folderSuggestions,
+  onClose,
+  onRefresh,
+  onPlay
+}: InspectorProps) {
   const pushToast = useUi((state) => state.pushToast);
+  const openAiReview = useUi((state) => state.openAiReview);
   const [note, setNote] = useState('');
   const [tagInput, setTagInput] = useState('');
   const [folderInput, setFolderInput] = useState('');
@@ -115,6 +125,31 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
     }
   };
 
+  const unapproveAiTag = async (tag: VideoItem['aiTags'][number]) => {
+    try {
+      await api.ai.review.unapprove({ videoId: item.id, name: tag.name, category: tag.category });
+      pushToast('info', '已取消通过该 AI 标签');
+      onRefresh();
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    }
+  };
+
+  const retag = async () => {
+    setBusy(true);
+    try {
+      const result = await api.ai.queue.enqueue({ videoIds: [item.id], force: true });
+      pushToast(
+        result.queued > 0 ? 'success' : 'warn',
+        result.queued > 0 ? '已加入打标队列' : '未能加入队列'
+      );
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const runAction = async (action: 'trash' | 'redownload' | 'reveal' | 'openSource') => {
     if (busy) return;
     setBusy(true);
@@ -140,6 +175,12 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
     }
   };
 
+  const aiGroups = new Map<string, VideoItem['aiTags']>();
+  for (const tag of item.aiTags) {
+    if (!aiGroups.has(tag.category)) aiGroups.set(tag.category, []);
+    aiGroups.get(tag.category)!.push(tag);
+  }
+
   return (
     <aside className="relative z-10 flex h-full w-[292px] flex-none flex-col border-l border-line2 bg-panel/50">
       <div className="flex h-12 flex-none items-center justify-between border-b border-line2 px-3">
@@ -152,7 +193,7 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
       <div className="scroll-thin flex-1 overflow-y-auto px-3 pb-6">
         <div className="relative mt-3 overflow-hidden rounded-lg border border-line bg-panel3">
           <div className="aspect-video w-full bg-gradient-to-br from-panel3 to-surface">
-            {item.thumbUrl ?? item.coverUrl ? (
+            {(item.thumbUrl ?? item.coverUrl) ? (
               <img src={item.thumbUrl ?? item.coverUrl ?? ''} alt="" className="h-full w-full object-cover" />
             ) : null}
           </div>
@@ -191,19 +232,39 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
             )}
           >
             <AlertTriangle size={12} className="mt-0.5 flex-none" />
-            <span>{item.status === 'missing' ? '本地文件已丢失，可尝试重新下载或重新定位。' : '源内容已失效，本地文件仍可用。'}</span>
+            <span>
+              {item.status === 'missing'
+                ? '本地文件已丢失，可尝试重新下载或重新定位。'
+                : '源内容已失效，本地文件仍可用。'}
+            </span>
           </div>
         ) : null}
 
         <div className="mt-3 flex gap-1.5">
-          <Button variant="primary" size="sm" className="flex-1" onClick={() => onPlay(item.id)} disabled={!item.videoUrl}>
+          <Button
+            variant="primary"
+            size="sm"
+            className="flex-1"
+            onClick={() => onPlay(item.id)}
+            disabled={!item.videoUrl}
+          >
             <Play size={12} />
             播放
           </Button>
-          <Button variant="subtle" size="sm" onClick={() => void runAction('reveal')} title="在资源管理器中显示">
+          <Button
+            variant="subtle"
+            size="sm"
+            onClick={() => void runAction('reveal')}
+            title="在资源管理器中显示"
+          >
             <FolderOpen size={12} />
           </Button>
-          <Button variant="subtle" size="sm" onClick={() => void runAction('openSource')} title="打开 B 站源地址">
+          <Button
+            variant="subtle"
+            size="sm"
+            onClick={() => void runAction('openSource')}
+            title="打开 B 站源地址"
+          >
             <ExternalLink size={12} />
           </Button>
         </div>
@@ -268,6 +329,76 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
           </IconButton>
         </div>
 
+        <SectionLabel
+          right={
+            item.aiPendingCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => openAiReview(item.id)}
+                className="inline-flex items-center gap-1 text-[10px] text-yellow hover:underline"
+              >
+                {item.aiPendingCount} 待审
+              </button>
+            ) : undefined
+          }
+        >
+          AI 标签
+        </SectionLabel>
+        {item.aiTags.length === 0 ? (
+          <span className="px-1 text-[11px] text-dim">暂无 AI 标签</span>
+        ) : (
+          <div className="space-y-1.5">
+            {Array.from(aiGroups.entries()).map(([category, tags]) => (
+              <div key={category} className="px-1">
+                <span
+                  className={clsx(
+                    'inline-block rounded border px-1.5 py-0.5 text-[10px]',
+                    categoryClass(category)
+                  )}
+                >
+                  {category}
+                </span>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {tags.map((tag) => (
+                    <span
+                      key={`${tag.name}-${tag.category}`}
+                      className="group inline-flex items-center gap-1 rounded border border-line bg-panel2 px-1.5 py-0.5 text-[11px] text-muted"
+                      title={`${AI_TAG_SOURCE_LABEL[tag.source]} · 置信度 ${formatConfidence(tag.confidence)}`}
+                    >
+                      <Sparkles size={8} className="text-blue/70" />
+                      {tag.name}
+                      <span className="font-mono text-[9px] text-dim">
+                        {formatConfidence(tag.confidence)}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`取消通过 AI 标签 ${tag.name}`}
+                        onClick={() => void unapproveAiTag(tag)}
+                        className="text-dim opacity-0 transition-opacity hover:text-red group-hover:opacity-100"
+                      >
+                        <X size={9} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-1.5 flex gap-1 px-1">
+          <Button size="sm" variant="subtle" onClick={() => openAiReview(item.id)}>
+            审核
+            {item.aiPendingCount > 0 ? ` (${item.aiPendingCount})` : ''}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => void retag()} disabled={busy}>
+            <RefreshCw size={11} />
+            重新打标
+          </Button>
+        </div>
+        {item.aiSummary ? (
+          <p className="mt-1 px-1 text-[10.5px] leading-4 text-dim">AI 摘要：{item.aiSummary}</p>
+        ) : null}
+
         <SectionLabel>文件夹</SectionLabel>
         <div className="flex flex-wrap gap-1 px-1">
           {item.folders.length === 0 ? <span className="text-[11px] text-dim">未归类</span> : null}
@@ -325,12 +456,17 @@ export function Inspector({ item, tagSuggestions, folderSuggestions, onClose, on
         <div className="rounded-lg border border-line/70 bg-panel2/50 px-2 py-1">
           <MetaRow label="时长" value={formatDuration(item.duration)} />
           <MetaRow label="分辨率" value={resolutionLabel(item.width, item.height)} />
-          <MetaRow label="编码" value={`${codecLabel(item.vcodec)} / ${(item.acodec ?? '—').toUpperCase()}`} />
+          <MetaRow
+            label="编码"
+            value={`${codecLabel(item.vcodec)} / ${(item.acodec ?? '—').toUpperCase()}`}
+          />
           <MetaRow label="大小" value={formatBytes(item.fileSize)} />
           <MetaRow label="添加" value={formatDate(item.createdAt)} />
           <MetaRow label="下载" value={formatDate(item.downloadedAt)} />
           <MetaRow label="BV" value={item.bvid || '—'} />
-          {item.playPosition > 0 ? <MetaRow label="上次进度" value={formatDuration(item.playPosition)} /> : null}
+          {item.playPosition > 0 ? (
+            <MetaRow label="上次进度" value={formatDuration(item.playPosition)} />
+          ) : null}
         </div>
 
         <div className="mt-3 flex gap-1.5">

@@ -274,5 +274,149 @@ export const migrations: Migration[] = [
          SET video_key = 'bv:' || bvid || ':' || page
        WHERE video_key <> 'bv:' || bvid || ':' || page;
     `
+  },
+  {
+    id: 9,
+    name: 'ai_tagging',
+    sql: /* sql */ `
+      CREATE TABLE IF NOT EXISTS ai_tag_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL DEFAULT 'global',
+        source_id INTEGER REFERENCES sources(id) ON DELETE CASCADE,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        focus_json TEXT NOT NULL DEFAULT '[]',
+        taxonomy_json TEXT NOT NULL DEFAULT '{}',
+        system_prompt TEXT NOT NULL DEFAULT '',
+        prompt_template TEXT NOT NULL DEFAULT '',
+        max_tags INTEGER NOT NULL DEFAULT 12,
+        min_confidence REAL NOT NULL DEFAULT 0.5,
+        language TEXT NOT NULL DEFAULT 'zh-CN',
+        use_acrcloud INTEGER NOT NULL DEFAULT 1,
+        use_bilibili_tags INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_profiles_default
+        ON ai_tag_profiles(is_default) WHERE scope = 'global' AND is_default = 1;
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_ai_profiles_source
+        ON ai_tag_profiles(source_id) WHERE scope = 'source' AND source_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS ai_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER REFERENCES ai_tag_profiles(id) ON DELETE SET NULL,
+        provider_id TEXT,
+        provider_name TEXT,
+        model TEXT,
+        scope_json TEXT NOT NULL DEFAULT '{}',
+        total INTEGER NOT NULL DEFAULT 0,
+        done INTEGER NOT NULL DEFAULT 0,
+        failed INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'queued',
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ai_batches_status ON ai_batches(status, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS ai_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id INTEGER REFERENCES ai_batches(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        profile_id INTEGER REFERENCES ai_tag_profiles(id) ON DELETE SET NULL,
+        provider_id TEXT,
+        provider_name TEXT,
+        protocol TEXT,
+        model TEXT,
+        status TEXT NOT NULL DEFAULT 'queued',
+        stage TEXT,
+        frames_json TEXT NOT NULL DEFAULT '[]',
+        prompt_hash TEXT,
+        system_prompt TEXT,
+        user_prompt TEXT,
+        raw_response TEXT,
+        result_json TEXT,
+        error TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        tool_calls_json TEXT NOT NULL DEFAULT '[]',
+        review_status TEXT NOT NULL DEFAULT 'pending',
+        started_at TEXT,
+        finished_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ai_runs_video ON ai_runs(video_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ai_runs_batch ON ai_runs(batch_id);
+      CREATE INDEX IF NOT EXISTS idx_ai_runs_status ON ai_runs(status);
+      CREATE INDEX IF NOT EXISTS idx_ai_runs_review ON ai_runs(review_status, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS ai_run_tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id INTEGER NOT NULL REFERENCES ai_runs(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'vision',
+        status TEXT NOT NULL DEFAULT 'pending',
+        evidence TEXT,
+        edited INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ai_run_tags_run ON ai_run_tags(run_id, status);
+      CREATE INDEX IF NOT EXISTS idx_ai_run_tags_video ON ai_run_tags(video_id, status);
+
+      CREATE TABLE IF NOT EXISTS ai_tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (normalized_name, category)
+      );
+
+      CREATE TABLE IF NOT EXISTS video_ai_tags (
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        ai_tag_id INTEGER NOT NULL REFERENCES ai_tags(id) ON DELETE CASCADE,
+        run_id INTEGER REFERENCES ai_runs(id) ON DELETE SET NULL,
+        confidence REAL NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'vision',
+        approved_at TEXT NOT NULL,
+        PRIMARY KEY (video_id, ai_tag_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_video_ai_tags_tag ON video_ai_tags(ai_tag_id);
+
+      CREATE TABLE IF NOT EXISTS ai_music_cache (
+        hash TEXT PRIMARY KEY,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_id TEXT,
+        provider_name TEXT,
+        model TEXT,
+        mode TEXT NOT NULL,
+        sample_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'queued',
+        result_json TEXT,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        error TEXT,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+      );
+    `
+  },
+  {
+    id: 10,
+    name: 'ai_request_counts',
+    sql: /* sql */ `
+      ALTER TABLE ai_runs ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ai_runs ADD COLUMN music_request_count INTEGER NOT NULL DEFAULT 0;
+    `
   }
 ];

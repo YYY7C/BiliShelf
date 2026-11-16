@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import log from 'electron-log/main';
 import { parseRange } from '@shared/range';
 import { fromLibraryRelative, isInside, libraryPaths } from './paths';
+import { one } from './db/index';
 import { getAsset, getVideoRow } from './db/videos';
 import { getRemoteCoverPath } from './services/covers';
 
@@ -27,7 +28,8 @@ export function registerPrivilegedSchemes(): void {
   ]);
 }
 
-const MIME: Record<string, string> = {  '.mp4': 'video/mp4',
+const MIME: Record<string, string> = {
+  '.mp4': 'video/mp4',
   '.m4v': 'video/mp4',
   '.mkv': 'video/x-matroska',
   '.webm': 'video/webm',
@@ -137,6 +139,26 @@ function resolveAssetFile(id: number, type: string): string | null {
   return absolute;
 }
 
+function resolveAiFrame(runId: number, index: number): string | null {
+  const row = one<{ frames_json: string }>('SELECT frames_json FROM ai_runs WHERE id = ?', [runId]);
+  if (!row) return null;
+  let frames: Array<{ index: number; path: string }>;
+  try {
+    frames = JSON.parse(row.frames_json) as Array<{ index: number; path: string }>;
+  } catch {
+    return null;
+  }
+  const frame = frames.find((item) => Number(item.index) === index);
+  if (!frame?.path) return null;
+  const root = libraryPaths().root;
+  const absolute = fromLibraryRelative(root, frame.path);
+  if (!isInside(root, absolute)) {
+    log.warn('[protocol] blocked ai frame escape', runId, index);
+    return null;
+  }
+  return absolute;
+}
+
 /**
  * bilishelf://media/<videoId>          -> 主视频（支持 Range）
  * bilishelf://asset/<videoId>/<type>   -> 封面/缩略图/字幕/弹幕等
@@ -171,6 +193,17 @@ export function registerAppProtocol(): void {
         const id = Number(parts[0]);
         if (!Number.isFinite(id)) return new Response('Bad id', { status: 400 });
         const file = getRemoteCoverPath(id);
+        if (!file) return new Response('Not found', { status: 404 });
+        return await serveFile(request, file);
+      }
+
+      if (url.hostname === 'ai') {
+        const runId = Number(parts[0]);
+        const index = Number(parts[1]);
+        if (!Number.isFinite(runId) || !Number.isFinite(index)) {
+          return new Response('Bad request', { status: 400 });
+        }
+        const file = resolveAiFrame(runId, index);
         if (!file) return new Response('Not found', { status: 404 });
         return await serveFile(request, file);
       }

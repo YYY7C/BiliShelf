@@ -1,5 +1,19 @@
 import type { BilishelfApi } from '@shared/ipc';
 import type {
+  AcrCloudSummary,
+  AiAnalysisRun,
+  AiBatch,
+  AiConsentState,
+  AiProviderInput,
+  AiProviderSummary,
+  AiReviewItem,
+  AiReviewTag,
+  AiRunDetail,
+  AiRunSummary,
+  AiStats,
+  AiTagProfile,
+  AiTagProfileInput,
+  AiTagSummary,
   AppSettings,
   AuthStatus,
   DownloadJob,
@@ -11,6 +25,14 @@ import type {
   TagSummary,
   VideoItem
 } from '@shared/types';
+import {
+  DEFAULT_FOCUS,
+  DEFAULT_MAX_TAGS,
+  DEFAULT_MIN_CONFIDENCE,
+  DEFAULT_PROMPT_TEMPLATE,
+  DEFAULT_SYSTEM_PROMPT,
+  DEFAULT_TAXONOMY
+} from '@shared/aiDefaults';
 
 /** 浏览器里直接打开（非 Electron）时使用的演示数据，便于设计/联调。 */
 export const isDemo = typeof window === 'undefined' || !window.bilishelf;
@@ -113,7 +135,11 @@ function makeVideos(): VideoItem[] {
       sourceId: index % 2 === 0 ? 1 : 2,
       sourceName: index % 2 === 0 ? '动画参考' : '稍后再看',
       hasDanmaku: index % 3 === 0,
-      hasSubtitle: index % 4 === 0
+      hasSubtitle: index % 4 === 0,
+      aiTags: [],
+      aiPendingCount: 0,
+      aiSummary: null,
+      aiLastRunAt: null
     } satisfies VideoItem;
   });
 }
@@ -215,7 +241,13 @@ const demoFolders: FolderSummary[] = [
 ];
 
 const demoSmart: SmartCollection[] = [
-  { id: 1, name: '未看的教程', query: { tag: '教程', status: 'present', sort: 'added' }, icon: null, sort: 0 },
+  {
+    id: 1,
+    name: '未看的教程',
+    query: { tag: '教程', status: 'present', sort: 'added' },
+    icon: null,
+    sort: 0
+  },
   { id: 2, name: '大文件', query: { sort: 'size', status: 'present' }, icon: null, sort: 1 }
 ];
 
@@ -307,13 +339,417 @@ const demoSettings: AppSettings = {
   coverBackdropOpacity: 82,
   coverBackdropDim: 55,
   sidebarTransparent: true,
+  closeToTray: true,
   ytdlpPath: '',
   ffmpegPath: '',
-  requestDelayMs: 600
+  requestDelayMs: 600,
+  aiFrameCount: 3,
+  aiFrameWidth: 768,
+  aiIncludeCover: true,
+  aiConcurrency: 2,
+  aiRequestDelayMs: 300,
+  aiTimeoutMs: 120000,
+  aiMaxRetries: 2,
+  aiMaxToolRounds: 3,
+  aiCacheDays: 30
 };
 
 let localVideos = [...demoVideos];
 let localJobs = [...demoJobs];
+
+/* ------------------------------- demo AI state ------------------------------ */
+
+const DEMO_NOW = new Date().toISOString();
+let demoProviderSeq = 2;
+let demoProfileSeq = 2;
+let demoReviewTagSeq = 10000;
+
+let demoProviders: AiProviderSummary[] = [
+  {
+    id: 'demo-provider',
+    name: '演示 VLM',
+    protocol: 'openai',
+    baseUrl: 'https://demo.local/v1',
+    model: 'demo-vlm',
+    hasApiKey: true,
+    apiKeyHint: '…demo',
+    headerKeys: [],
+    capabilities: { vision: true, tools: true, jsonMode: true, audio: false },
+    temperature: 0.2,
+    maxTokens: 1200,
+    timeoutMs: 120000,
+    maxRetries: 2,
+    imageDetail: 'auto',
+    pricing: null,
+    isDefault: true,
+    custom: null
+  }
+];
+
+let demoProfiles: AiTagProfile[] = [
+  {
+    id: 1,
+    name: '舞蹈 / 人物（演示）',
+    description: '演示方案：关注人物形象、服饰、动作、BGM。',
+    scope: 'global',
+    sourceId: null,
+    sourceName: null,
+    isDefault: true,
+    focus: [...DEFAULT_FOCUS],
+    taxonomy: {
+      categories: DEFAULT_TAXONOMY.categories.map((category) => ({
+        ...category,
+        examples: [...(category.examples ?? [])]
+      })),
+      stopwords: [...DEFAULT_TAXONOMY.stopwords],
+      aliases: { ...DEFAULT_TAXONOMY.aliases }
+    },
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    promptTemplate: DEFAULT_PROMPT_TEMPLATE,
+    maxTags: DEFAULT_MAX_TAGS,
+    minConfidence: DEFAULT_MIN_CONFIDENCE,
+    language: 'zh-CN',
+    useAcrcloud: true,
+    useBilibiliTags: true,
+    createdAt: DEMO_NOW,
+    updatedAt: DEMO_NOW
+  }
+];
+
+let demoAcrcloud: AcrCloudSummary = {
+  configured: false,
+  enabled: false,
+  host: 'identify-eu-west-1.acrcloud.com',
+  accessKeyHint: null,
+  hasSecret: false,
+  callsToday: 0
+};
+
+let demoConsent: AiConsentState = { acceptedAt: null, hosts: [] };
+
+const demoAiReviewListeners = new Set<() => void>();
+function notifyDemoAiReview(): void {
+  for (const listener of demoAiReviewListeners) {
+    try {
+      listener();
+    } catch {
+      // ignore demo listener errors
+    }
+  }
+}
+
+function demoFrameSet(video: VideoItem): AiReviewItem['frames'] {
+  const cover = video.thumbUrl ?? svgCover(video.title, '#7b3a52', '#1d4d63');
+  return [
+    { index: -1, time: 0, url: cover },
+    { index: 0, time: 12, url: svgCover(`${video.title} · 00:12`, '#2b4c7e', '#6e3f6b') },
+    { index: 1, time: 45, url: svgCover(`${video.title} · 00:45`, '#3c6b4e', '#1f3c5e') },
+    { index: 2, time: 80, url: svgCover(`${video.title} · 01:20`, '#6b4a2b', '#3c2b52') }
+  ];
+}
+
+function demoReviewItem(video: VideoItem, index: number): AiReviewItem {
+  const definitions: Array<[string, string[]]> = [
+    ['人物', ['长发', '双马尾']],
+    ['服饰', ['JK制服', '过膝袜']],
+    ['动作', ['舞蹈']],
+    ['BGM', ['《演示曲名》', '电子流行']]
+  ];
+  const aiTags: AiReviewTag[] = definitions.flatMap(([category, names], categoryIndex) =>
+    names.map((name, tagIndex) => ({
+      id: index * 100 + categoryIndex * 10 + tagIndex + 1,
+      category,
+      name,
+      confidence: Math.max(0.55, 0.95 - categoryIndex * 0.04 - tagIndex * 0.03),
+      source: category === 'BGM' ? 'acrcloud' : 'vision',
+      status: 'pending',
+      evidence: null,
+      edited: false
+    }))
+  );
+  return {
+    runId: 1000 + index,
+    videoId: video.id,
+    videoTitle: video.title,
+    upName: video.upName,
+    sourceName: video.sourceName,
+    duration: video.duration,
+    coverUrl: video.thumbUrl,
+    reviewStatus: 'pending',
+    frames: demoFrameSet(video),
+    originalTags: video.tags.map((name, tagIndex) => ({
+      name,
+      source: tagIndex === 0 ? 'manual' : 'auto'
+    })),
+    aiTags,
+    summary: '演示摘要：人物穿着制服在室内舞台跳舞，画面偏二次元风格。',
+    bgm:
+      index === 0
+        ? {
+            title: '《演示曲名》',
+            artists: ['演示歌手'],
+            genres: ['电子流行'],
+            source: 'acrcloud',
+            confidence: 0.92
+          }
+        : null,
+    profileName: demoProfiles[0]!.name,
+    providerName: demoProviders[0]!.name,
+    model: demoProviders[0]!.model,
+    inputTokens: 1280,
+    outputTokens: 240,
+    requestCount: 2,
+    musicRequestCount: 1,
+    createdAt: DEMO_NOW
+  };
+}
+let demoReviewItems: AiReviewItem[] = localVideos
+  .slice(0, 3)
+  .map((video, index) => demoReviewItem(video, index));
+
+localVideos = localVideos.map((video, index) => {
+  if (index < 3) {
+    return { ...video, aiPendingCount: demoReviewItems[index]?.aiTags.length ?? 0 };
+  }
+  if (index === 3) {
+    return {
+      ...video,
+      aiTags: [
+        { name: 'JK制服', category: '服饰', confidence: 0.94, source: 'vision' as const },
+        { name: '长发', category: '人物', confidence: 0.91, source: 'vision' as const }
+      ],
+      aiSummary: '演示摘要：JK 制服人物参考。',
+      aiLastRunAt: DEMO_NOW
+    };
+  }
+  return video;
+});
+
+let demoBatches: AiBatch[] = [
+  {
+    id: 1,
+    profileName: demoProfiles[0]!.name,
+    providerName: demoProviders[0]!.name,
+    model: demoProviders[0]!.model,
+    total: demoReviewItems.length,
+    done: demoReviewItems.length,
+    failed: 0,
+    requestCount: demoReviewItems.reduce((sum, item) => sum + item.requestCount, 0),
+    musicRequestCount: demoReviewItems.reduce((sum, item) => sum + item.musicRequestCount, 0),
+    status: 'done',
+    createdAt: DEMO_NOW,
+    startedAt: DEMO_NOW,
+    finishedAt: DEMO_NOW
+  }
+];
+
+const demoRuns: AiRunSummary[] = demoReviewItems.map((item) => ({
+  id: item.runId,
+  batchId: 1,
+  videoId: item.videoId,
+  videoTitle: item.videoTitle,
+  coverUrl: item.coverUrl,
+  profileId: 1,
+  profileName: item.profileName,
+  providerId: 'demo-provider',
+  providerName: item.providerName,
+  model: item.model,
+  status: 'done',
+  stage: 'done',
+  reviewStatus: 'pending',
+  error: null,
+  inputTokens: item.inputTokens,
+  outputTokens: item.outputTokens,
+  requestCount: item.requestCount,
+  musicRequestCount: item.musicRequestCount,
+  frames: item.frames,
+  startedAt: DEMO_NOW,
+  finishedAt: DEMO_NOW,
+  createdAt: item.createdAt
+}));
+
+let demoAnalysisRuns: AiAnalysisRun[] = [];
+
+function demoReviewStatus(item: AiReviewItem): AiReviewItem['reviewStatus'] {
+  const pending = item.aiTags.filter((tag) => tag.status === 'pending').length;
+  const approved = item.aiTags.filter((tag) => tag.status === 'approved').length;
+  const rejected = item.aiTags.filter((tag) => tag.status === 'rejected').length;
+  if (pending > 0) return 'pending';
+  if (approved > 0 && rejected > 0) return 'partial';
+  if (approved > 0) return 'approved';
+  if (rejected > 0) return 'rejected';
+  return 'pending';
+}
+
+function demoReviewCounts(): { pending: number; approved: number; rejected: number } {
+  const tags = demoReviewItems.flatMap((item) => item.aiTags);
+  return {
+    pending: tags.filter((tag) => tag.status === 'pending').length,
+    approved:
+      tags.filter((tag) => tag.status === 'approved').length +
+      localVideos.reduce((sum, video) => sum + video.aiTags.length, 0),
+    rejected: tags.filter((tag) => tag.status === 'rejected').length
+  };
+}
+
+function demoAiStats(): AiStats {
+  const counts = demoReviewCounts();
+  return {
+    taggedVideos: new Set([
+      ...localVideos.filter((video) => video.aiTags.length > 0).map((video) => video.id),
+      ...demoReviewItems.map((item) => item.videoId)
+    ]).size,
+    pendingTags: counts.pending,
+    approvedTags: counts.approved,
+    failedRuns: demoRuns.filter((run) => run.status === 'failed').length,
+    inputTokens: demoRuns.reduce((sum, run) => sum + run.inputTokens, 0),
+    outputTokens: demoRuns.reduce((sum, run) => sum + run.outputTokens, 0),
+    modelRequests: demoRuns.reduce((sum, run) => sum + run.requestCount, 0),
+    musicRequests: demoRuns.reduce((sum, run) => sum + run.musicRequestCount, 0)
+  };
+}
+
+function demoAiTagSummaries(): AiTagSummary[] {
+  const map = new Map<
+    string,
+    { id: number; name: string; category: string; count: number; sources: Set<string> }
+  >();
+  for (const video of localVideos) {
+    for (const tag of video.aiTags) {
+      const key = `${tag.category}:${tag.name}`;
+      const existing = map.get(key);
+      if (existing) {
+        existing.count += 1;
+        existing.sources.add(tag.source);
+      } else {
+        map.set(key, {
+          id: map.size + 1,
+          name: tag.name,
+          category: tag.category,
+          count: 1,
+          sources: new Set([tag.source])
+        });
+      }
+    }
+  }
+  return Array.from(map.values())
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      count: item.count,
+      source: item.sources.size > 1 ? 'mixed' : (Array.from(item.sources)[0] as AiTagSummary['source'])
+    }))
+    .sort((a, b) => b.count - a.count);
+}
+
+function demoAddApprovedTag(videoId: number, tag: AiReviewTag): void {
+  localVideos = localVideos.map((video) => {
+    if (video.id !== videoId) return video;
+    const exists = video.aiTags.some((item) => item.name === tag.name && item.category === tag.category);
+    if (exists) return video;
+    return {
+      ...video,
+      aiTags: [
+        ...video.aiTags,
+        { name: tag.name, category: tag.category, confidence: tag.confidence, source: tag.source }
+      ],
+      aiSummary: video.aiSummary ?? '演示摘要：AI 已审核通过的标签。',
+      aiLastRunAt: new Date().toISOString()
+    };
+  });
+}
+
+function demoRemoveApprovedTag(videoId: number, name: string, category: string): void {
+  localVideos = localVideos.map((video) =>
+    video.id === videoId
+      ? {
+          ...video,
+          aiTags: video.aiTags.filter((tag) => !(tag.name === name && tag.category === category))
+        }
+      : video
+  );
+}
+
+function demoRunDetail(id: number): AiRunDetail | null {
+  const run = demoRuns.find((item) => item.id === id);
+  if (!run) return null;
+  const item = demoReviewItems.find((review) => review.runId === id);
+  return {
+    ...run,
+    systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    userPrompt: '演示用户提示词：视频标题、UP 主、原始标签和分类体系……',
+    rawResponse: JSON.stringify(
+      { summary: item?.summary, tags: item?.aiTags ?? [], bgm: item?.bgm ?? null },
+      null,
+      2
+    ),
+    result: item
+      ? {
+          summary: item.summary ?? undefined,
+          tags: item.aiTags.map((tag) => ({
+            name: tag.name,
+            category: tag.category,
+            confidence: tag.confidence
+          })),
+          bgm: item.bgm
+        }
+      : null,
+    toolCalls: []
+  };
+}
+
+function demoProfileFromInput(input: AiTagProfileInput, id: number): AiTagProfile {
+  return {
+    id,
+    name: input.name,
+    description: input.description ?? '',
+    scope: input.scope,
+    sourceId: input.sourceId ?? null,
+    sourceName: input.sourceId
+      ? (demoSources.find((source) => source.id === input.sourceId)?.title ?? null)
+      : null,
+    isDefault: Boolean(input.isDefault),
+    focus: [...input.focus],
+    taxonomy: input.taxonomy,
+    systemPrompt: input.systemPrompt,
+    promptTemplate: input.promptTemplate,
+    maxTags: input.maxTags,
+    minConfidence: input.minConfidence,
+    language: input.language,
+    useAcrcloud: input.useAcrcloud,
+    useBilibiliTags: input.useBilibiliTags,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function demoProviderFromInput(input: AiProviderInput, id: string): AiProviderSummary {
+  return {
+    id,
+    name: input.name,
+    protocol: input.protocol,
+    baseUrl: input.baseUrl,
+    model: input.model,
+    hasApiKey:
+      Boolean(input.apiKey) || Boolean(demoProviders.find((provider) => provider.id === id)?.hasApiKey),
+    apiKeyHint: input.apiKey
+      ? `…${input.apiKey.slice(-4)}`
+      : (demoProviders.find((provider) => provider.id === id)?.apiKeyHint ?? null),
+    headerKeys: input.headers
+      ? Object.keys(input.headers)
+      : (demoProviders.find((provider) => provider.id === id)?.headerKeys ?? []),
+    capabilities: input.capabilities,
+    temperature: input.temperature,
+    maxTokens: input.maxTokens,
+    timeoutMs: input.timeoutMs,
+    maxRetries: input.maxRetries,
+    imageDetail: input.imageDetail,
+    pricing: input.pricing ?? null,
+    isDefault: Boolean(input.isDefault) || demoProviders.length === 0,
+    custom: input.custom ?? null
+  };
+}
 
 function enqueueDemoJobs(ids: number[]): number {
   const base = localJobs.length;
@@ -357,6 +793,7 @@ function computeStats(): LibraryStats {
     unavailable: localVideos.filter((video) => video.status === 'unavailable').length,
     trashed: localVideos.filter((video) => video.status === 'trashed').length,
     withTags: localVideos.filter((video) => video.tags.length > 0).length,
+    withAiTags: localVideos.filter((video) => video.aiTags.length > 0).length,
     totalBytes: localVideos.reduce((sum, video) => sum + (video.fileSize ?? 0), 0)
   };
 }
@@ -365,7 +802,7 @@ export const demoApi: BilishelfApi = {
   app: {
     info: () =>
       delay({
-        version: '0.2.2-demo',
+        version: '0.3.0-demo',
         electron: '—',
         chrome: '—',
         node: '—',
@@ -408,7 +845,8 @@ export const demoApi: BilishelfApi = {
         if (query.folder && !video.folders.some((folder) => folder.includes(query.folder!))) return false;
         if (query.search) {
           const needle = query.search.toLowerCase();
-          const haystack = `${video.title} ${video.upName ?? ''} ${video.tags.join(' ')} ${video.note}`.toLowerCase();
+          const haystack =
+            `${video.title} ${video.upName ?? ''} ${video.tags.join(' ')} ${video.note}`.toLowerCase();
           if (!haystack.includes(needle)) return false;
         }
         return true;
@@ -547,9 +985,39 @@ export const demoApi: BilishelfApi = {
     cancelSync: async () => undefined
   },
   jobs: {
-    list: () => delay({ items: localJobs, total: localJobs.length }),
+    list: () =>
+      delay({
+        items: localJobs,
+        total: localJobs.length,
+        counts: {
+          active: localJobs.filter((job) =>
+            ['resolving', 'downloading', 'postprocessing'].includes(job.status)
+          ).length,
+          pausable: localJobs.filter((job) => ['resolving', 'downloading'].includes(job.status)).length,
+          queued: localJobs.filter((job) => job.status === 'queued').length,
+          paused: localJobs.filter((job) => job.status === 'paused').length
+        }
+      }),
     pause: async () => undefined,
     resume: async () => undefined,
+    pauseAll: async () => {
+      let count = 0;
+      localJobs = localJobs.map((job) => {
+        if (!['queued', 'resolving', 'downloading', 'postprocessing'].includes(job.status)) return job;
+        count += 1;
+        return { ...job, status: 'paused' };
+      });
+      return count;
+    },
+    resumeAll: async () => {
+      let count = 0;
+      localJobs = localJobs.map((job) => {
+        if (job.status !== 'paused') return job;
+        count += 1;
+        return { ...job, status: 'queued' };
+      });
+      return count;
+    },
     cancel: async () => undefined,
     retry: async () => undefined,
     clear: async () => {
@@ -618,6 +1086,474 @@ export const demoApi: BilishelfApi = {
     status: () => delay(demoAuth),
     login: () => delay({ ...demoAuth, loggedIn: true, mid: 1000, name: '演示账号' }),
     logout: () => delay(demoAuth)
+  },
+  ai: {
+    providers: {
+      list: () => delay(demoProviders.map((provider) => ({ ...provider }))),
+      save: (input) => {
+        const id = input.id ?? `demo-provider-${demoProviderSeq++}`;
+        const next = demoProviderFromInput(input, id);
+        demoProviders = input.id
+          ? demoProviders.map((provider) => (provider.id === id ? next : provider))
+          : [...demoProviders, next];
+        if (next.isDefault) {
+          demoProviders = demoProviders.map((provider) => ({ ...provider, isDefault: provider.id === id }));
+        }
+        if (!demoProviders.some((provider) => provider.isDefault) && demoProviders[0]) {
+          demoProviders = demoProviders.map((provider, index) => ({ ...provider, isDefault: index === 0 }));
+        }
+        return delay(demoProviders);
+      },
+      remove: (id) => {
+        demoProviders = demoProviders.filter((provider) => provider.id !== id);
+        if (demoProviders.length > 0 && !demoProviders.some((provider) => provider.isDefault)) {
+          demoProviders = demoProviders.map((provider, index) => ({ ...provider, isDefault: index === 0 }));
+        }
+        return delay(demoProviders);
+      },
+      setDefault: (id) => {
+        demoProviders = demoProviders.map((provider) => ({ ...provider, isDefault: provider.id === id }));
+        return delay(demoProviders);
+      },
+      test: () =>
+        delay({
+          ok: true,
+          latencyMs: 42,
+          status: 200,
+          message: '演示模式：连接测试通过（未发起真实请求）',
+          visionOk: true,
+          jsonOk: true,
+          raw: 'OK'
+        }),
+      probe: () =>
+        delay({
+          models: [
+            {
+              id: 'demo-vlm',
+              name: 'Demo VLM',
+              vision: true,
+              tools: true,
+              jsonMode: true,
+              maxOutputTokens: 1200,
+              contextWindow: 128000,
+              pricing: null,
+              inputModalities: ['text', 'image/png', 'image/jpeg']
+            },
+            {
+              id: 'demo-text',
+              name: 'Demo Text',
+              vision: false,
+              tools: false,
+              jsonMode: true,
+              maxOutputTokens: 4096,
+              contextWindow: 128000,
+              pricing: null,
+              inputModalities: ['text']
+            }
+          ],
+          message: '演示模式：已读取 2 个模型，包含能力元数据；选择模型会自动填入配置。'
+        })
+    },
+    acrcloud: {
+      get: () => delay({ ...demoAcrcloud }),
+      save: (input) => {
+        demoAcrcloud = {
+          ...demoAcrcloud,
+          enabled: input.enabled ?? demoAcrcloud.enabled,
+          host: input.host ?? demoAcrcloud.host,
+          configured: Boolean(input.accessKey || demoAcrcloud.configured),
+          accessKeyHint: input.accessKey ? `…${input.accessKey.slice(-4)}` : demoAcrcloud.accessKeyHint,
+          hasSecret: Boolean(input.accessSecret || demoAcrcloud.hasSecret)
+        };
+        return delay({ ...demoAcrcloud });
+      },
+      test: () =>
+        delay({
+          ok: demoAcrcloud.configured,
+          latencyMs: 38,
+          status: 200,
+          message: demoAcrcloud.configured
+            ? '演示模式：ACRCloud 鉴权成功'
+            : '演示模式：请先填写 ACRCloud 凭据',
+          code: demoAcrcloud.configured ? 1001 : null
+        })
+    },
+    profiles: {
+      list: () => delay(demoProfiles.map((profile) => ({ ...profile }))),
+      save: (input) => {
+        const id = input.id ?? demoProfileSeq++;
+        const next = demoProfileFromInput(input, id);
+        demoProfiles = input.id
+          ? demoProfiles.map((profile) => (profile.id === id ? next : profile))
+          : [...demoProfiles, next];
+        if (next.isDefault && next.scope === 'global') {
+          demoProfiles = demoProfiles.map((profile) => ({
+            ...profile,
+            isDefault: profile.scope === 'global' ? profile.id === id : false
+          }));
+        }
+        return delay(demoProfiles);
+      },
+      remove: (id) => {
+        demoProfiles = demoProfiles.filter((profile) => profile.id !== id);
+        if (demoProfiles.length > 0 && !demoProfiles.some((profile) => profile.isDefault)) {
+          demoProfiles = demoProfiles.map((profile, index) => ({ ...profile, isDefault: index === 0 }));
+        }
+        return delay(demoProfiles);
+      },
+      setDefault: (id) => {
+        demoProfiles = demoProfiles.map((profile) => ({
+          ...profile,
+          isDefault: profile.scope === 'global' ? profile.id === id : profile.isDefault
+        }));
+        return delay(demoProfiles);
+      },
+      duplicate: (id) => {
+        const source = demoProfiles.find((profile) => profile.id === id);
+        if (!source) return delay(demoProfiles);
+        const copy: AiTagProfile = {
+          ...source,
+          id: demoProfileSeq++,
+          name: `${source.name} 副本`,
+          scope: 'global',
+          sourceId: null,
+          sourceName: null,
+          isDefault: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        demoProfiles = [...demoProfiles, copy];
+        return delay(demoProfiles);
+      }
+    },
+    consent: {
+      get: () => delay({ ...demoConsent }),
+      accept: (hosts) => {
+        demoConsent = { acceptedAt: new Date().toISOString(), hosts: Array.from(new Set(hosts)) };
+        return delay({ ...demoConsent });
+      }
+    },
+    queue: {
+      enqueue: (input) => {
+        const count = input.videoIds?.length ?? Math.min(3, localVideos.length);
+        const id = demoBatches.length + 1;
+        const batch: AiBatch = {
+          id,
+          profileName: demoProfiles[0]?.name ?? null,
+          providerName: demoProviders[0]?.name ?? null,
+          model: demoProviders[0]?.model ?? null,
+          total: count,
+          done: count,
+          failed: 0,
+          requestCount: 1,
+          musicRequestCount: 0,
+          status: 'done',
+          createdAt: new Date().toISOString(),
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString()
+        };
+        demoBatches = [batch, ...demoBatches];
+        return delay({ batchId: id, queued: count, skipped: 0 });
+      },
+      consent: () => delay({ hosts: [], required: false }),
+      batches: () => {
+        const counts = demoReviewCounts();
+        return delay({
+          batches: demoBatches.map((batch) => ({ ...batch })),
+          pendingReview: counts.pending,
+          running: demoBatches.filter((batch) => batch.status === 'running').length
+        });
+      },
+      pause: async (id) => {
+        demoBatches = demoBatches.map((batch) => (batch.id === id ? { ...batch, status: 'paused' } : batch));
+      },
+      resume: async (id) => {
+        demoBatches = demoBatches.map((batch) => (batch.id === id ? { ...batch, status: 'queued' } : batch));
+      },
+      cancel: async (id) => {
+        demoBatches = demoBatches.map((batch) =>
+          batch.id === id ? { ...batch, status: 'canceled' } : batch
+        );
+      },
+      retryFailed: async (id) => {
+        demoBatches = demoBatches.map((batch) => (batch.id === id ? { ...batch, status: 'queued' } : batch));
+      },
+      runs: (query) => {
+        let items = demoRuns.filter((run) => !query.batchId || run.batchId === query.batchId);
+        if (query.status && query.status !== 'all')
+          items = items.filter((run) => run.status === query.status);
+        return delay({ items, total: items.length });
+      },
+      getRun: (id) => delay(demoRunDetail(id)),
+      onQueue: () => () => undefined,
+      onProgress: () => () => undefined
+    },
+    review: {
+      list: (query) => {
+        let items = [...demoReviewItems];
+        const status = query.status ?? 'pending';
+        if (status === 'pending')
+          items = items.filter((item) => item.aiTags.some((tag) => tag.status === 'pending'));
+        else if (status === 'approved') items = items.filter((item) => item.reviewStatus === 'approved');
+        else if (status === 'rejected') items = items.filter((item) => item.reviewStatus === 'rejected');
+        else if (status === 'partial') items = items.filter((item) => item.reviewStatus === 'partial');
+        if (query.videoId) items = items.filter((item) => item.videoId === query.videoId);
+        if (query.search?.trim()) {
+          const needle = query.search.trim().toLowerCase();
+          items = items.filter(
+            (item) =>
+              item.videoTitle.toLowerCase().includes(needle) ||
+              (item.upName ?? '').toLowerCase().includes(needle) ||
+              item.aiTags.some((tag) => tag.name.toLowerCase().includes(needle))
+          );
+        }
+        if (query.minConfidence !== undefined) {
+          items = items.filter((item) => item.aiTags.some((tag) => tag.confidence >= query.minConfidence!));
+        }
+        const offset = query.offset ?? 0;
+        const limit = query.limit ?? 50;
+        return delay({ items: items.slice(offset, offset + limit), total: items.length });
+      },
+      counts: () => delay(demoReviewCounts()),
+      approve: (decision) => {
+        const runIds = new Set(decision.runIds);
+        const tagIds = decision.tagIds ? new Set(decision.tagIds) : null;
+        let approved = 0;
+        const videoIds = new Set<number>();
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (!runIds.has(item.runId)) return item;
+          const nextTags = item.aiTags.map((tag) => {
+            if (tag.status !== 'pending') return tag;
+            if (tagIds && !tagIds.has(tag.id)) return tag;
+            approved += 1;
+            videoIds.add(item.videoId);
+            demoAddApprovedTag(item.videoId, tag);
+            return { ...tag, status: 'approved' as const };
+          });
+          const next = { ...item, aiTags: nextTags };
+          return { ...next, reviewStatus: demoReviewStatus(next) };
+        });
+        notifyDemoAiReview();
+        return delay({
+          approved,
+          rejected: 0,
+          affectedVideos: videoIds.size,
+          videoIds: Array.from(videoIds)
+        });
+      },
+      reject: (decision) => {
+        const runIds = new Set(decision.runIds);
+        const tagIds = decision.tagIds ? new Set(decision.tagIds) : null;
+        let rejected = 0;
+        const videoIds = new Set<number>();
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (!runIds.has(item.runId)) return item;
+          const nextTags = item.aiTags.map((tag) => {
+            if (tag.status !== 'pending') return tag;
+            if (tagIds && !tagIds.has(tag.id)) return tag;
+            rejected += 1;
+            videoIds.add(item.videoId);
+            return { ...tag, status: 'rejected' as const };
+          });
+          const next = { ...item, aiTags: nextTags };
+          return { ...next, reviewStatus: demoReviewStatus(next) };
+        });
+        notifyDemoAiReview();
+        return delay({
+          approved: 0,
+          rejected,
+          affectedVideos: videoIds.size,
+          videoIds: Array.from(videoIds)
+        });
+      },
+      updateTag: (patch) => {
+        let updated: AiReviewItem | null = null;
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (!item.aiTags.some((tag) => tag.id === patch.tagId)) return item;
+          const next = {
+            ...item,
+            aiTags: item.aiTags.map((tag) =>
+              tag.id === patch.tagId
+                ? {
+                    ...tag,
+                    name: patch.name ?? tag.name,
+                    category: patch.category ?? tag.category,
+                    confidence: patch.confidence ?? tag.confidence,
+                    edited: true
+                  }
+                : tag
+            )
+          };
+          updated = { ...next, reviewStatus: demoReviewStatus(next) };
+          return updated;
+        });
+        return delay(updated);
+      },
+      addTag: (input) => {
+        let updated: AiReviewItem | null = null;
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (item.runId !== input.runId) return item;
+          const next = {
+            ...item,
+            aiTags: [
+              ...item.aiTags,
+              {
+                id: demoReviewTagSeq++,
+                category: input.category,
+                name: input.name,
+                confidence: input.confidence ?? 0.8,
+                source: 'vision' as const,
+                status: 'pending' as const,
+                evidence: null,
+                edited: true
+              }
+            ]
+          };
+          updated = { ...next, reviewStatus: demoReviewStatus(next) };
+          return updated;
+        });
+        return delay(updated);
+      },
+      removeTag: (input) => {
+        let updated: AiReviewItem | null = null;
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (!item.aiTags.some((tag) => tag.id === input.tagId)) return item;
+          const next = { ...item, aiTags: item.aiTags.filter((tag) => tag.id !== input.tagId) };
+          updated = { ...next, reviewStatus: demoReviewStatus(next) };
+          return updated;
+        });
+        return delay(updated);
+      },
+      restoreTag: (input) => {
+        let updated: AiReviewItem | null = null;
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (!item.aiTags.some((tag) => tag.id === input.tagId)) return item;
+          const next = {
+            ...item,
+            aiTags: item.aiTags.map((tag) =>
+              tag.id === input.tagId ? { ...tag, status: 'pending' as const } : tag
+            )
+          };
+          updated = { ...next, reviewStatus: demoReviewStatus(next) };
+          return updated;
+        });
+        return delay(updated);
+      },
+      unapprove: (input) => {
+        demoRemoveApprovedTag(input.videoId, input.name, input.category);
+        demoReviewItems = demoReviewItems.map((item) => {
+          if (item.videoId !== input.videoId) return item;
+          const next = {
+            ...item,
+            aiTags: item.aiTags.map((tag) =>
+              tag.name === input.name && tag.category === input.category && tag.status === 'approved'
+                ? { ...tag, status: 'pending' as const }
+                : tag
+            )
+          };
+          return { ...next, reviewStatus: demoReviewStatus(next) };
+        });
+        notifyDemoAiReview();
+        return delay({ approved: 0, rejected: 0, affectedVideos: 1, videoIds: [input.videoId] });
+      },
+      onChanged: (callback) => {
+        demoAiReviewListeners.add(callback);
+        return () => demoAiReviewListeners.delete(callback);
+      }
+    },
+    tags: {
+      list: () => delay(demoAiTagSummaries())
+    },
+    stats: () => delay(demoAiStats()),
+    analysis: {
+      estimate: (input) =>
+        delay({
+          videos: input.videoIds?.length ?? input.sampleSize,
+          requests: input.mode === 'text' ? 1 : 3,
+          imageCount: input.mode === 'text' ? 0 : 6,
+          approxInputTokens: 2400,
+          approxOutputTokens: 1200,
+          warnings: []
+        }),
+      run: (input) => {
+        const result: NonNullable<AiAnalysisRun['result']> = {
+          summary: '演示分析：这个库以动画参考、设计教程和摄影为主，建议关注人物形象、服饰、场景和 BGM。',
+          categories: DEFAULT_TAXONOMY.categories.map((category) => ({
+            name: category.name,
+            description: category.description ?? '',
+            tags: category.examples ?? [],
+            coverage: 0.7
+          })),
+          focus: [...DEFAULT_FOCUS],
+          stopwords: [...DEFAULT_TAXONOMY.stopwords],
+          aliases: {},
+          systemPrompt: DEFAULT_SYSTEM_PROMPT,
+          promptTemplate: DEFAULT_PROMPT_TEMPLATE,
+          notes: ['演示数据']
+        };
+        const run: AiAnalysisRun = {
+          id: demoAnalysisRuns.length + 1,
+          mode: input.mode,
+          status: 'done',
+          providerName: demoProviders[0]?.name ?? null,
+          model: demoProviders[0]?.model ?? null,
+          sample: localVideos.slice(0, Math.min(input.sampleSize, 8)).map((video) => ({
+            videoId: video.id,
+            title: video.title,
+            coverUrl: video.thumbUrl
+          })),
+          result,
+          inputTokens: 2400,
+          outputTokens: 1200,
+          error: null,
+          createdAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString()
+        };
+        demoAnalysisRuns = [run, ...demoAnalysisRuns];
+        return delay(run);
+      },
+      history: () => delay(demoAnalysisRuns),
+      get: (id) => delay(demoAnalysisRuns.find((run) => run.id === id) ?? null),
+      saveAsProfile: (input) => {
+        const run = demoAnalysisRuns.find((item) => item.id === input.runId);
+        if (!run?.result) return delay(demoProfiles);
+        const profile: AiTagProfile = {
+          id: demoProfileSeq++,
+          name: input.name,
+          description: run.result.summary.slice(0, 200),
+          scope: input.scope,
+          sourceId: input.scope === 'source' ? (input.sourceId ?? null) : null,
+          sourceName: null,
+          isDefault: Boolean(input.isDefault),
+          focus: run.result.focus,
+          taxonomy: {
+            categories: run.result.categories.map((category) => ({
+              name: category.name,
+              description: category.description,
+              examples: category.tags
+            })),
+            stopwords: run.result.stopwords,
+            aliases: run.result.aliases
+          },
+          systemPrompt: run.result.systemPrompt,
+          promptTemplate: run.result.promptTemplate,
+          maxTags: DEFAULT_MAX_TAGS,
+          minConfidence: DEFAULT_MIN_CONFIDENCE,
+          language: 'zh-CN',
+          useAcrcloud: true,
+          useBilibiliTags: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        demoProfiles = [...demoProfiles, profile];
+        return delay(demoProfiles);
+      },
+      onProgress: () => () => undefined
+    },
+    maintenance: {
+      cleanup: () =>
+        delay({ total: 0, updated: 0, failed: 0, bytesFreed: 0, details: '演示模式：没有需要清理的缓存' })
+    }
   },
   player: {
     progress: async () => undefined

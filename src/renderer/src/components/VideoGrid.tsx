@@ -116,7 +116,7 @@ export function VideoGrid({
   }
 
   return (
-    <div ref={parentRef} onScroll={handleScroll} className="scroll-thin h-full overflow-y-auto">
+    <div ref={parentRef} onScroll={handleScroll} className="scroll-thin scroll-stable h-full overflow-y-auto">
       <div style={{ height: virtualizer.getTotalSize() + TOP_PAD, position: 'relative', width: '100%' }}>
         {virtualizer.getVirtualItems().map((virtualRow) => {
           if (layout === 'list') {

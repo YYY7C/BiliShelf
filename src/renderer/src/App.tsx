@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  AiTagSummary,
   AppInfoResponse,
   AppSettings,
   AuthStatus,
@@ -14,6 +15,7 @@ import type {
 } from '@shared/types';
 import { api, isDemo } from './lib/bridge';
 import { useUi } from './lib/store';
+import { AiTaggingView } from './components/ai/AiTaggingView';
 import { Inspector } from './components/Inspector';
 import { FocusBackdrop } from './components/FocusBackdrop';
 import { QualityUpgradeModal } from './components/QualityUpgradeModal';
@@ -56,6 +58,7 @@ export default function App() {
   const bumpSources = useUi((state) => state.bumpSources);
   const jobs = useUi((state) => state.jobs);
   const jobsTotal = useUi((state) => state.jobsTotal);
+  const jobCounts = useUi((state) => state.jobCounts);
   const setJobsSnapshot = useUi((state) => state.setJobsSnapshot);
   const pushToast = useUi((state) => state.pushToast);
 
@@ -64,6 +67,8 @@ export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null);
   const [engines, setEngines] = useState<EngineStatus | null>(null);
   const [tags, setTags] = useState<TagSummary[]>([]);
+  const [aiTags, setAiTags] = useState<AiTagSummary[]>([]);
+  const [aiPending, setAiPending] = useState(0);
   const [folders, setFolders] = useState<FolderSummary[]>([]);
   const [smart, setSmart] = useState<SmartCollection[]>([]);
   const [sources, setSources] = useState<SourceSummary[]>([]);
@@ -88,14 +93,19 @@ export default function App() {
 
   const refreshMeta = useCallback(async () => {
     try {
-      const [nextTags, nextFolders, nextSmart, nextStats, nextInfo] = await Promise.all([
-        api.tags.list(),
-        api.folders.list(),
-        api.smart.list(),
-        api.library.stats(),
-        api.app.info()
-      ]);
+      const [nextTags, nextAiTags, nextAiCounts, nextFolders, nextSmart, nextStats, nextInfo] =
+        await Promise.all([
+          api.tags.list(),
+          api.ai.tags.list().catch(() => []),
+          api.ai.review.counts().catch(() => ({ pending: 0, approved: 0, rejected: 0 })),
+          api.folders.list(),
+          api.smart.list(),
+          api.library.stats(),
+          api.app.info()
+        ]);
       setTags(nextTags);
+      setAiTags(nextAiTags);
+      setAiPending(nextAiCounts.pending);
       setFolders(nextFolders);
       setSmart(nextSmart);
       setStats(nextStats);
@@ -191,6 +201,11 @@ export default function App() {
     const offToast = api.events.onToast((toast) => pushToast(toast.kind, toast.message));
     const offAuth = api.events.onAuth((status) => setAuth(status));
     const offImport = api.events.onImportProgress((progress) => setImportProgress(progress));
+    const offAiReview = api.ai.review.onChanged(() => {
+      bumpLibrary();
+      scheduleMetaRefresh();
+    });
+    const offAiQueue = api.ai.queue.onQueue((snapshot) => setAiPending(snapshot.pendingReview));
     return () => {
       offLibrary();
       offSources();
@@ -198,6 +213,8 @@ export default function App() {
       offToast();
       offAuth();
       offImport();
+      offAiReview();
+      offAiQueue();
     };
   }, [bumpLibrary, bumpSources, pushToast, refreshSources, scheduleMetaRefresh, setJobsSnapshot]);
 
@@ -214,6 +231,7 @@ export default function App() {
         .query({
           search: filters.search.trim() || undefined,
           tag: filters.tag ?? undefined,
+          aiTag: filters.aiTag ?? undefined,
           folder: filters.folder ?? undefined,
           status: filters.status,
           sourceId: filters.sourceId ?? undefined,
@@ -241,7 +259,15 @@ export default function App() {
 
   useEffect(() => {
     setLimit(PAGE_SIZE);
-  }, [filters.search, filters.tag, filters.folder, filters.status, filters.sort, filters.sourceId]);
+  }, [
+    filters.search,
+    filters.tag,
+    filters.aiTag,
+    filters.folder,
+    filters.status,
+    filters.sort,
+    filters.sourceId
+  ]);
 
   // 选中项的详情（可能不在当前页）
   useEffect(() => {
@@ -396,7 +422,9 @@ export default function App() {
   const tagNames = useMemo(() => tags.map((tag) => tag.name), [tags]);
   const folderNames = useMemo(() => folders.map((folder) => folder.name), [folders]);
   const engineReady = engines?.ready ?? false;
-  const filtered = Boolean(filters.search || filters.tag || filters.folder || filters.sourceId);
+  const filtered = Boolean(
+    filters.search || filters.tag || filters.aiTag || filters.folder || filters.sourceId
+  );
 
   // 全局快捷键：Ctrl+K 搜索、空格播放、Delete 回收站
   useEffect(() => {
@@ -429,14 +457,14 @@ export default function App() {
 
   return (
     <div className="relative flex h-full w-full overflow-hidden bg-ink text-fg">
-      <FocusBackdrop
-        item={view === 'library' && settings?.coverBackdrop !== false ? selectedItem : null}
-      />
+      <FocusBackdrop item={view === 'library' && settings?.coverBackdrop !== false ? selectedItem : null} />
       <Sidebar
         view={view}
         onView={setView}
         stats={stats}
         tags={tags}
+        aiTags={aiTags}
+        aiPending={aiPending}
         folders={folders}
         smart={smart}
         sources={sources}
@@ -499,7 +527,7 @@ export default function App() {
           </div>
         ) : null}
 
-        <main className="min-h-0 flex-1">
+        <main key={view} className="view-fade min-h-0 flex-1">
           {view === 'library' ? (
             <VideoGrid
               items={items}
@@ -514,6 +542,17 @@ export default function App() {
               }}
               onImport={() => void importFiles()}
               filtered={filtered}
+            />
+          ) : null}
+
+          {view === 'ai' ? (
+            <AiTaggingView
+              info={info}
+              settings={settings}
+              onChanged={() => {
+                bumpLibrary();
+                scheduleMetaRefresh();
+              }}
             />
           ) : null}
 
@@ -538,6 +577,7 @@ export default function App() {
             <TasksView
               jobs={jobs}
               total={jobsTotal}
+              counts={jobCounts}
               engineReady={engineReady}
               onRefresh={() => void refreshJobs()}
             />
@@ -652,7 +692,12 @@ export default function App() {
         >
           <div className="flex flex-wrap gap-2">
             {[0, 1, 2, 3, 4, 5].map((rating) => (
-              <Button key={rating} variant={rating === 0 ? 'subtle' : 'primary'} size="sm" onClick={() => void applyRate(rating)}>
+              <Button
+                key={rating}
+                variant={rating === 0 ? 'subtle' : 'primary'}
+                size="sm"
+                onClick={() => void applyRate(rating)}
+              >
                 {rating === 0 ? '清除评分' : `${rating} 星`}
               </Button>
             ))}
@@ -669,8 +714,8 @@ export default function App() {
         >
           <div className="space-y-3">
             <p className="text-[12px] leading-5 text-muted">
-              将移除 <span className="font-mono text-pink">{selection.length}</span> 条记录及其标签/文件夹关联。
-              视频文件仍会保留在素材库目录中；如需彻底清理，请手动删除对应文件夹。
+              将移除 <span className="font-mono text-pink">{selection.length}</span>{' '}
+              条记录及其标签/文件夹关联。 视频文件仍会保留在素材库目录中；如需彻底清理，请手动删除对应文件夹。
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setBulkKind(null)}>

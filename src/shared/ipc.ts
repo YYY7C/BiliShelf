@@ -1,4 +1,40 @@
 import type {
+  AcrCloudInput,
+  AcrCloudSummary,
+  AcrCloudTestResult,
+  AiAnalysisEstimate,
+  AiAnalysisInput,
+  AiAnalysisProgress,
+  AiAnalysisRun,
+  AiAnalysisSaveInput,
+  AiConsentPreview,
+  AiConsentState,
+  AiEnqueueInput,
+  AiEnqueueResult,
+  AiProgress,
+  AiProviderInput,
+  AiModelProbeResult,
+  AiProviderSummary,
+  AiProviderTestResult,
+  AiQueueSnapshot,
+  AiReviewCounts,
+  AiReviewDecision,
+  AiReviewItem,
+  AiReviewPage,
+  AiReviewQuery,
+  AiReviewResult,
+  AiReviewTagAdd,
+  AiReviewTagPatch,
+  AiReviewTagRemove,
+  AiReviewTagRestore,
+  AiReviewUnapproveInput,
+  AiRunDetail,
+  AiRunPage,
+  AiRunQuery,
+  AiStats,
+  AiTagProfile,
+  AiTagProfileInput,
+  AiTagSummary,
   AppInfoResponse,
   AppSettings,
   AuthStatus,
@@ -88,6 +124,8 @@ export const IPC = {
   jobsList: 'jobs:list',
   jobsPause: 'jobs:pause',
   jobsResume: 'jobs:resume',
+  jobsPauseAll: 'jobs:pause-all',
+  jobsResumeAll: 'jobs:resume-all',
   jobsCancel: 'jobs:cancel',
   jobsRetry: 'jobs:retry',
   jobsClear: 'jobs:clear',
@@ -115,6 +153,62 @@ export const IPC = {
   authLogout: 'auth:logout',
 
   playerProgress: 'player:progress',
+
+  aiProvidersList: 'ai:providers:list',
+  aiProvidersSave: 'ai:providers:save',
+  aiProvidersRemove: 'ai:providers:remove',
+  aiProvidersSetDefault: 'ai:providers:set-default',
+  aiProvidersTest: 'ai:providers:test',
+  aiProvidersProbe: 'ai:providers:probe',
+
+  aiAcrcloudGet: 'ai:acrcloud:get',
+  aiAcrcloudSave: 'ai:acrcloud:save',
+  aiAcrcloudTest: 'ai:acrcloud:test',
+
+  aiProfilesList: 'ai:profiles:list',
+  aiProfilesSave: 'ai:profiles:save',
+  aiProfilesRemove: 'ai:profiles:remove',
+  aiProfilesSetDefault: 'ai:profiles:set-default',
+  aiProfilesDuplicate: 'ai:profiles:duplicate',
+
+  aiConsentGet: 'ai:consent:get',
+  aiConsentAccept: 'ai:consent:accept',
+
+  aiQueueEnqueue: 'ai:queue:enqueue',
+  aiQueueConsent: 'ai:queue:consent',
+  aiQueueBatches: 'ai:queue:batches',
+  aiQueuePause: 'ai:queue:pause',
+  aiQueueResume: 'ai:queue:resume',
+  aiQueueCancel: 'ai:queue:cancel',
+  aiQueueRetryFailed: 'ai:queue:retry-failed',
+  aiRunsList: 'ai:runs:list',
+  aiRunsGet: 'ai:runs:get',
+
+  aiReviewList: 'ai:review:list',
+  aiReviewCounts: 'ai:review:counts',
+  aiReviewApprove: 'ai:review:approve',
+  aiReviewReject: 'ai:review:reject',
+  aiReviewUpdateTag: 'ai:review:update-tag',
+  aiReviewAddTag: 'ai:review:add-tag',
+  aiReviewRemoveTag: 'ai:review:remove-tag',
+  aiReviewRestoreTag: 'ai:review:restore-tag',
+  aiReviewUnapprove: 'ai:review:unapprove',
+
+  aiTagsList: 'ai:tags:list',
+  aiStats: 'ai:stats',
+
+  aiAnalysisEstimate: 'ai:analysis:estimate',
+  aiAnalysisRun: 'ai:analysis:run',
+  aiAnalysisHistory: 'ai:analysis:history',
+  aiAnalysisGet: 'ai:analysis:get',
+  aiAnalysisSaveAsProfile: 'ai:analysis:save-as-profile',
+
+  aiMaintenanceCleanup: 'ai:maintenance:cleanup',
+
+  eventAiQueue: 'event:ai-queue',
+  eventAiProgress: 'event:ai-progress',
+  eventAiReview: 'event:ai-review',
+  eventAiAnalysis: 'event:ai-analysis',
 
   eventJobs: 'event:jobs',
   eventLibrary: 'event:library',
@@ -170,12 +264,22 @@ export interface BilishelfApi {
   };
   smart: {
     list(): Promise<SmartCollection[]>;
-    save(input: { id?: number; name: string; query: LibraryQuery; icon?: string | null }): Promise<SmartCollection[]>;
+    save(input: {
+      id?: number;
+      name: string;
+      query: LibraryQuery;
+      icon?: string | null;
+    }): Promise<SmartCollection[]>;
     remove(id: number): Promise<SmartCollection[]>;
   };
   sources: {
     list(): Promise<SourceSummary[]>;
-    add(input: { kind: SourceKind; url?: string; remoteId?: string; title?: string }): Promise<SourceSummary[]>;
+    add(input: {
+      kind: SourceKind;
+      url?: string;
+      remoteId?: string;
+      title?: string;
+    }): Promise<SourceSummary[]>;
     update(id: number, patch: SourcePatch): Promise<SourceSummary[]>;
     remove(id: number): Promise<SourceSummary[]>;
     sync(id: number): Promise<{ added: number; updated: number; unavailable: number }>;
@@ -193,6 +297,8 @@ export interface BilishelfApi {
     list(): Promise<JobsSnapshot>;
     pause(id: number): Promise<void>;
     resume(id: number): Promise<void>;
+    pauseAll(): Promise<number>;
+    resumeAll(): Promise<number>;
     cancel(id: number): Promise<void>;
     retry(id: number): Promise<void>;
     clear(): Promise<void>;
@@ -220,6 +326,72 @@ export interface BilishelfApi {
     status(): Promise<AuthStatus>;
     login(): Promise<AuthStatus>;
     logout(): Promise<AuthStatus>;
+  };
+  ai: {
+    providers: {
+      list(): Promise<AiProviderSummary[]>;
+      save(input: AiProviderInput): Promise<AiProviderSummary[]>;
+      remove(id: string): Promise<AiProviderSummary[]>;
+      setDefault(id: string): Promise<AiProviderSummary[]>;
+      test(id: string): Promise<AiProviderTestResult>;
+      probe(input: AiProviderInput): Promise<AiModelProbeResult>;
+    };
+    acrcloud: {
+      get(): Promise<AcrCloudSummary>;
+      save(input: AcrCloudInput): Promise<AcrCloudSummary>;
+      test(): Promise<AcrCloudTestResult>;
+    };
+    profiles: {
+      list(): Promise<AiTagProfile[]>;
+      save(input: AiTagProfileInput): Promise<AiTagProfile[]>;
+      remove(id: number): Promise<AiTagProfile[]>;
+      setDefault(id: number): Promise<AiTagProfile[]>;
+      duplicate(id: number): Promise<AiTagProfile[]>;
+    };
+    consent: {
+      get(): Promise<AiConsentState>;
+      accept(hosts: string[]): Promise<AiConsentState>;
+    };
+    queue: {
+      enqueue(input: AiEnqueueInput): Promise<AiEnqueueResult>;
+      consent(input: AiEnqueueInput): Promise<AiConsentPreview>;
+      batches(): Promise<AiQueueSnapshot>;
+      pause(batchId: number): Promise<void>;
+      resume(batchId: number): Promise<void>;
+      cancel(batchId: number): Promise<void>;
+      retryFailed(batchId: number): Promise<void>;
+      runs(query: AiRunQuery): Promise<AiRunPage>;
+      getRun(id: number): Promise<AiRunDetail | null>;
+      onQueue(cb: (snapshot: AiQueueSnapshot) => void): () => void;
+      onProgress(cb: (progress: AiProgress) => void): () => void;
+    };
+    review: {
+      list(query: AiReviewQuery): Promise<AiReviewPage>;
+      counts(): Promise<AiReviewCounts>;
+      approve(input: AiReviewDecision): Promise<AiReviewResult>;
+      reject(input: AiReviewDecision): Promise<AiReviewResult>;
+      updateTag(input: AiReviewTagPatch): Promise<AiReviewItem | null>;
+      addTag(input: AiReviewTagAdd): Promise<AiReviewItem | null>;
+      removeTag(input: AiReviewTagRemove): Promise<AiReviewItem | null>;
+      restoreTag(input: AiReviewTagRestore): Promise<AiReviewItem | null>;
+      unapprove(input: AiReviewUnapproveInput): Promise<AiReviewResult>;
+      onChanged(cb: () => void): () => void;
+    };
+    tags: {
+      list(): Promise<AiTagSummary[]>;
+    };
+    stats(): Promise<AiStats>;
+    analysis: {
+      estimate(input: AiAnalysisInput): Promise<AiAnalysisEstimate>;
+      run(input: AiAnalysisInput): Promise<AiAnalysisRun>;
+      history(): Promise<AiAnalysisRun[]>;
+      get(id: number): Promise<AiAnalysisRun | null>;
+      saveAsProfile(input: AiAnalysisSaveInput): Promise<AiTagProfile[]>;
+      onProgress(cb: (progress: AiAnalysisProgress) => void): () => void;
+    };
+    maintenance: {
+      cleanup(): Promise<MaintenanceResult>;
+    };
   };
   player: {
     progress(id: number, position: number): Promise<void>;

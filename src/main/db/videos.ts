@@ -1,5 +1,6 @@
 import log from 'electron-log/main';
 import type {
+  AiTagRef,
   BulkAction,
   LibraryQuery,
   LibraryResult,
@@ -67,10 +68,7 @@ function decorate(rows: VideoRow[]): VideoItem[] {
   const ids = rows.map((r) => r.id);
   const placeholders = ids.map(() => '?').join(',');
 
-  const assets = all<AssetRow>(
-    `SELECT video_id, type FROM assets WHERE video_id IN (${placeholders})`,
-    ids
-  );
+  const assets = all<AssetRow>(`SELECT video_id, type FROM assets WHERE video_id IN (${placeholders})`, ids);
   const assetMap = new Map<number, Set<string>>();
   for (const asset of assets) {
     if (!assetMap.has(asset.video_id)) assetMap.set(asset.video_id, new Set());
@@ -103,6 +101,59 @@ function decorate(rows: VideoRow[]): VideoItem[] {
     folderMap.get(row.video_id)!.push(row.name);
   }
 
+  const aiTagRows = all<{
+    video_id: number;
+    name: string;
+    category: string;
+    confidence: number;
+    source: AiTagRef['source'];
+  }>(
+    `SELECT vat.video_id, at.name, at.category, vat.confidence, vat.source
+       FROM video_ai_tags vat
+       JOIN ai_tags at ON at.id = vat.ai_tag_id
+      WHERE vat.video_id IN (${placeholders})
+      ORDER BY at.category COLLATE NOCASE, vat.confidence DESC, at.name COLLATE NOCASE`,
+    ids
+  );
+  const aiTagMap = new Map<number, AiTagRef[]>();
+  for (const row of aiTagRows) {
+    if (!aiTagMap.has(row.video_id)) aiTagMap.set(row.video_id, []);
+    aiTagMap.get(row.video_id)!.push({
+      name: row.name,
+      category: row.category,
+      confidence: row.confidence,
+      source: row.source
+    });
+  }
+
+  const aiPendingRows = all<{ video_id: number; c: number }>(
+    `SELECT video_id, COUNT(*) AS c FROM ai_run_tags
+      WHERE status = 'pending' AND video_id IN (${placeholders})
+      GROUP BY video_id`,
+    ids
+  );
+  const aiPendingMap = new Map(aiPendingRows.map((row) => [row.video_id, row.c]));
+
+  const aiSummaryRows = all<{ video_id: number; result_json: string | null; created_at: string }>(
+    `SELECT video_id, result_json, created_at FROM (
+       SELECT video_id, result_json, created_at,
+              ROW_NUMBER() OVER (PARTITION BY video_id ORDER BY created_at DESC, id DESC) AS rn
+         FROM ai_runs
+        WHERE status = 'done' AND video_id IN (${placeholders})
+     ) WHERE rn = 1`,
+    ids
+  );
+  const aiSummaryMap = new Map<number, { summary: string | null; lastRunAt: string }>();
+  for (const row of aiSummaryRows) {
+    let summary: string | null;
+    try {
+      summary = (JSON.parse(row.result_json ?? '{}') as { summary?: string }).summary ?? null;
+    } catch {
+      summary = null;
+    }
+    aiSummaryMap.set(row.video_id, { summary, lastRunAt: row.created_at });
+  }
+
   return rows.map((row) => {
     const types = assetMap.get(row.id);
     const hasVideo = Boolean(row.file_path);
@@ -116,7 +167,11 @@ function decorate(rows: VideoRow[]): VideoItem[] {
       upMid: row.up_mid,
       description: row.description,
       coverUrl: row.cover_url,
-      thumbUrl: types?.has('thumb') ? `bilishelf://asset/${row.id}/thumb` : types?.has('cover') ? `bilishelf://asset/${row.id}/cover` : null,
+      thumbUrl: types?.has('thumb')
+        ? `bilishelf://asset/${row.id}/thumb`
+        : types?.has('cover')
+          ? `bilishelf://asset/${row.id}/cover`
+          : null,
       localCoverUrl: types?.has('cover') ? `bilishelf://asset/${row.id}/cover` : null,
       videoUrl: hasVideo ? `bilishelf://media/${row.id}` : null,
       previewUrl: types?.has('preview') ? `bilishelf://asset/${row.id}/preview` : null,
@@ -141,7 +196,11 @@ function decorate(rows: VideoRow[]): VideoItem[] {
       sourceId: row.source_id,
       sourceName: row.source_name ?? null,
       hasDanmaku: types?.has('danmaku') ?? false,
-      hasSubtitle: types?.has('subtitle') ?? false
+      hasSubtitle: types?.has('subtitle') ?? false,
+      aiTags: aiTagMap.get(row.id) ?? [],
+      aiPendingCount: aiPendingMap.get(row.id) ?? 0,
+      aiSummary: aiSummaryMap.get(row.id)?.summary ?? null,
+      aiLastRunAt: aiSummaryMap.get(row.id)?.lastRunAt ?? null
     };
   });
 }
@@ -170,6 +229,14 @@ function buildWhere(query: LibraryQuery): { clause: string; params: unknown[] } 
     params.push(query.tag);
   }
 
+  if (query.aiTag) {
+    where.push(`EXISTS (
+      SELECT 1 FROM video_ai_tags vat JOIN ai_tags at ON at.id = vat.ai_tag_id
+      WHERE vat.video_id = v.id AND at.name = ?
+    )`);
+    params.push(query.aiTag);
+  }
+
   if (query.folder) {
     where.push(`EXISTS (
       SELECT 1 FROM video_folders vf JOIN folders f ON f.id = vf.folder_id
@@ -190,9 +257,13 @@ function buildWhere(query: LibraryQuery): { clause: string; params: unknown[] } 
           SELECT 1 FROM video_tags vt JOIN tags t ON t.id = vt.tag_id
           WHERE vt.video_id = v.id AND t.name LIKE ?
         )
+        OR EXISTS (
+          SELECT 1 FROM video_ai_tags vat JOIN ai_tags at ON at.id = vat.ai_tag_id
+          WHERE vat.video_id = v.id AND at.name LIKE ?
+        )
       )`);
       const like = `%${search}%`;
-      params.push(like, like, like, like);
+      params.push(like, like, like, like, like);
     }
   }
 
@@ -223,17 +294,20 @@ export function queryVideos(query: LibraryQuery): LibraryResult {
   const offset = Math.max(query.offset ?? 0, 0);
 
   const total = one<{ c: number }>(`SELECT COUNT(*) AS c FROM videos v ${clause}`, params)?.c ?? 0;
-  const rows = all<VideoRow>(
-    `${SELECT_BASE} ${clause} ${orderBy(query.sort)} LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
-  );
+  const rows = all<VideoRow>(`${SELECT_BASE} ${clause} ${orderBy(query.sort)} LIMIT ? OFFSET ?`, [
+    ...params,
+    limit,
+    offset
+  ]);
 
   return { items: decorate(rows), total };
 }
 
 export function queryVideoIds(query: LibraryQuery): number[] {
   const { clause, params } = buildWhere(query);
-  return all<{ id: number }>(`SELECT v.id FROM videos v ${clause} ${orderBy(query.sort)}`, params).map((r) => r.id);
+  return all<{ id: number }>(`SELECT v.id FROM videos v ${clause} ${orderBy(query.sort)}`, params).map(
+    (r) => r.id
+  );
 }
 
 export function getVideo(id: number): VideoItem | null {
@@ -253,6 +327,7 @@ export function stats(): LibraryStats {
     missing: number;
     unavailable: number;
     with_tags: number;
+    with_ai_tags: number;
     total_bytes: number;
   }>(`SELECT
       COUNT(*) AS total,
@@ -260,6 +335,7 @@ export function stats(): LibraryStats {
       SUM(CASE WHEN status = 'missing' THEN 1 ELSE 0 END) AS missing,
       SUM(CASE WHEN status = 'unavailable' THEN 1 ELSE 0 END) AS unavailable,
       SUM(CASE WHEN EXISTS (SELECT 1 FROM video_tags vt WHERE vt.video_id = videos.id) THEN 1 ELSE 0 END) AS with_tags,
+      SUM(CASE WHEN EXISTS (SELECT 1 FROM video_ai_tags vat WHERE vat.video_id = videos.id) THEN 1 ELSE 0 END) AS with_ai_tags,
       COALESCE(SUM(file_size), 0) AS total_bytes
     FROM videos WHERE status <> 'trashed'`);
 
@@ -272,6 +348,7 @@ export function stats(): LibraryStats {
     unavailable: row?.unavailable ?? 0,
     trashed,
     withTags: row?.with_tags ?? 0,
+    withAiTags: row?.with_ai_tags ?? 0,
     totalBytes: row?.total_bytes ?? 0
   };
 }
@@ -483,7 +560,13 @@ export function setVideoMetadata(
   );
 }
 
-export function setAsset(videoId: number, type: string, relPath: string, size?: number | null, mime?: string | null): void {
+export function setAsset(
+  videoId: number,
+  type: string,
+  relPath: string,
+  size?: number | null,
+  mime?: string | null
+): void {
   run(
     `INSERT INTO assets (video_id, type, path, mime, size)
      VALUES (?,?,?,?,?)
@@ -520,10 +603,14 @@ export function bulkAction(action: BulkAction): number {
   return tx(() => {
     switch (action.action) {
       case 'trash':
-        ids.forEach((id) => run("UPDATE videos SET status = 'trashed', updated_at = ? WHERE id = ?", [now(), id]));
+        ids.forEach((id) =>
+          run("UPDATE videos SET status = 'trashed', updated_at = ? WHERE id = ?", [now(), id])
+        );
         return ids.length;
       case 'restore':
-        ids.forEach((id) => run("UPDATE videos SET status = 'present', updated_at = ? WHERE id = ?", [now(), id]));
+        ids.forEach((id) =>
+          run("UPDATE videos SET status = 'present', updated_at = ? WHERE id = ?", [now(), id])
+        );
         return ids.length;
       case 'delete':
         ids.forEach((id) => {
@@ -533,7 +620,9 @@ export function bulkAction(action: BulkAction): number {
         });
         return ids.length;
       case 'rate':
-        ids.forEach((id) => run('UPDATE videos SET rating = ?, updated_at = ? WHERE id = ?', [action.rating ?? 0, now(), id]));
+        ids.forEach((id) =>
+          run('UPDATE videos SET rating = ?, updated_at = ? WHERE id = ?', [action.rating ?? 0, now(), id])
+        );
         return ids.length;
       case 'retag': {
         if (!action.tag) return 0;
@@ -586,7 +675,9 @@ export function removeTagByName(videoId: number, name: string): void {
 export function assignFolderByName(videoId: number, name: string): void {
   const folderName = name.trim().replace(/\s+/g, ' ');
   if (!folderName) return;
-  let folder = one<{ id: number }>('SELECT id FROM folders WHERE name = ? AND parent_id IS NULL', [folderName]);
+  let folder = one<{ id: number }>('SELECT id FROM folders WHERE name = ? AND parent_id IS NULL', [
+    folderName
+  ]);
   if (!folder) {
     const result = run('INSERT INTO folders (name, created_at) VALUES (?,?)', [folderName, now()]);
     folder = { id: Number(result.lastInsertRowid) };
@@ -609,9 +700,11 @@ export function refreshVideoFts(id: number): void {
     description: string | null;
     note: string | null;
     tags_text: string | null;
+    ai_tags_text: string | null;
   }>(
     `SELECT v.title, v.up_name, v.description, v.note,
-      (SELECT GROUP_CONCAT(t.name, ' ') FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags_text
+      (SELECT GROUP_CONCAT(t.name, ' ') FROM video_tags vt JOIN tags t ON t.id = vt.tag_id WHERE vt.video_id = v.id) AS tags_text,
+      (SELECT GROUP_CONCAT(at.name, ' ') FROM video_ai_tags vat JOIN ai_tags at ON at.id = vat.ai_tag_id WHERE vat.video_id = v.id) AS ai_tags_text
      FROM videos v WHERE v.id = ?`,
     [id]
   );
@@ -623,7 +716,7 @@ export function refreshVideoFts(id: number): void {
       row.title ?? '',
       row.up_name ?? '',
       row.description ?? '',
-      row.tags_text ?? '',
+      [row.tags_text, row.ai_tags_text].filter(Boolean).join(' '),
       row.note ?? ''
     ]);
   }

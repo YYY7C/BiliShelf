@@ -13,6 +13,7 @@ export interface LibraryPaths {
   thumbs: string;
   sprites: string;
   temp: string;
+  aiCache: string;
   backups: string;
   logs: string;
 }
@@ -27,13 +28,24 @@ export function libraryPaths(rootOverride?: string): LibraryPaths {
     thumbs: path.join(root, 'cache', 'thumbnails'),
     sprites: path.join(root, 'cache', 'sprites'),
     temp: path.join(root, 'cache', 'temp'),
+    aiCache: path.join(root, 'cache', 'ai'),
     backups: path.join(root, 'backups'),
     logs: path.join(root, 'logs')
   };
 }
 
 export function ensureLibraryDirs(paths = libraryPaths()): LibraryPaths {
-  for (const dir of [paths.root, paths.media, paths.cache, paths.thumbs, paths.sprites, paths.temp, paths.backups, paths.logs]) {
+  for (const dir of [
+    paths.root,
+    paths.media,
+    paths.cache,
+    paths.thumbs,
+    paths.sprites,
+    paths.temp,
+    paths.aiCache,
+    paths.backups,
+    paths.logs
+  ]) {
     fs.mkdirSync(dir, { recursive: true });
   }
   return paths;

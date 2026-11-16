@@ -2,6 +2,19 @@ import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import { z } from 'zod';
 import log from 'electron-log/main';
 import type {
+  AiAnalysisInput,
+  AiAnalysisSaveInput,
+  AiEnqueueInput,
+  AiProviderInput,
+  AiReviewDecision,
+  AiReviewQuery,
+  AiReviewTagAdd,
+  AiReviewTagPatch,
+  AiReviewTagRemove,
+  AiReviewTagRestore,
+  AiReviewUnapproveInput,
+  AiRunQuery,
+  AiTagProfileInput,
   AppSettings,
   BulkAction,
   EnqueueInput,
@@ -27,7 +40,7 @@ import {
   stats as libraryStats,
   updateVideo
 } from './db/videos';
-import { jobTotalCount, listJobs } from './db/jobs';
+import { jobStatusCounts, jobTotalCount, listJobs } from './db/jobs';
 import { listSources, queryRemoteItems, updateSource } from './db/sources';
 import {
   createFolder,
@@ -69,6 +82,51 @@ import { getAuthStatus, logout, openLoginWindow } from './services/auth';
 import { cacheRemoteCovers } from './services/covers';
 import { relocateLibrary } from './services/relocate';
 import { getSettings, updateSettings, defaultLibraryRoot } from './store';
+import {
+  aiStats,
+  batchSnapshot,
+  deleteProfile,
+  duplicateProfile,
+  ensureDefaultProfile,
+  getRun,
+  listAiTags,
+  listProfiles,
+  listReview,
+  listRuns,
+  reviewCounts,
+  saveProfile,
+  setDefaultProfile
+} from './db/ai';
+import {
+  getAcrCloudSummary,
+  getConsent,
+  listProviders,
+  removeProvider,
+  rememberConsentHosts,
+  saveAcrCloud,
+  saveProvider,
+  setDefaultProvider
+} from './services/ai/config';
+import { probeProviderModels, testProvider } from './services/ai/providers';
+import { acrCloudCallsToday, testAcrCloud } from './services/ai/acrcloud';
+import { aiTaggingManager } from './services/ai/tagging';
+import {
+  addReviewTag,
+  approveReview,
+  rejectReview,
+  removeReviewTag,
+  restoreReviewTag,
+  unapproveReviewTag,
+  updateReviewTag
+} from './services/ai/review';
+import {
+  analysisHistory,
+  analysisRun,
+  estimateAnalysis,
+  runAnalysis,
+  saveAnalysisAsProfile
+} from './services/ai/analysis';
+import { cleanupAiCache } from './services/ai/frames';
 
 type WindowGetter = () => BrowserWindow | null;
 
@@ -124,6 +182,7 @@ const themeSchema = z.enum(['dark', 'light']);
 const libraryQuerySchema = z.object({
   search: z.string().max(200).optional(),
   tag: z.string().max(120).optional(),
+  aiTag: z.string().max(120).optional(),
   folder: z.string().max(120).optional(),
   status: z.enum(['present', 'missing', 'unavailable', 'trashed', 'importing', 'all']).optional(),
   sourceId: z.number().int().optional(),
@@ -158,11 +217,176 @@ const bulkSchema = z.object({
   rating: z.number().min(0).max(5).optional()
 });
 
+const aiProviderSchema = z.object({
+  id: z.string().max(80).optional(),
+  name: z.string().min(1).max(120),
+  protocol: z.enum(['openai', 'anthropic', 'gemini', 'custom']),
+  baseUrl: z.string().min(1).max(500),
+  model: z.string().min(1).max(200),
+  apiKey: z.string().max(1000).optional(),
+  clearApiKey: z.boolean().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  capabilities: z.object({
+    vision: z.boolean(),
+    tools: z.boolean(),
+    jsonMode: z.boolean(),
+    audio: z.boolean()
+  }),
+  temperature: z.number().min(0).max(2),
+  maxTokens: z.number().int().min(128).max(32000),
+  timeoutMs: z.number().int().min(10_000).max(600_000),
+  maxRetries: z.number().int().min(0).max(5),
+  imageDetail: z.enum(['low', 'auto', 'high']),
+  pricing: z
+    .object({
+      inputPerMillion: z.number().min(0),
+      outputPerMillion: z.number().min(0),
+      currency: z.string().max(10)
+    })
+    .nullable()
+    .optional(),
+  custom: z
+    .object({
+      compatMode: z.enum(['openai', 'anthropic', 'gemini', 'template']),
+      bodyTemplate: z.string().max(20_000).optional(),
+      responsePath: z.string().max(300).optional()
+    })
+    .nullable()
+    .optional(),
+  isDefault: z.boolean().optional()
+});
+
+const aiAcrcloudSchema = z.object({
+  enabled: z.boolean().optional(),
+  host: z.string().max(300).optional(),
+  accessKey: z.string().max(500).optional(),
+  accessSecret: z.string().max(500).optional(),
+  clearSecret: z.boolean().optional()
+});
+
+const aiProfileSchema = z.object({
+  id: idSchema.optional(),
+  name: z.string().min(1).max(120),
+  description: z.string().max(500).optional(),
+  scope: z.enum(['global', 'source']),
+  sourceId: idSchema.nullable().optional(),
+  isDefault: z.boolean().optional(),
+  focus: z.array(z.string().max(40)).max(30),
+  taxonomy: z.object({
+    categories: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(40),
+          description: z.string().max(300).optional(),
+          examples: z.array(z.string().max(60)).max(50).optional()
+        })
+      )
+      .max(20),
+    stopwords: z.array(z.string().max(40)).max(200),
+    aliases: z.record(z.string(), z.string())
+  }),
+  systemPrompt: z.string().max(8000),
+  promptTemplate: z.string().max(12_000),
+  maxTags: z.number().int().min(1).max(50),
+  minConfidence: z.number().min(0).max(1),
+  language: z.string().max(20),
+  useAcrcloud: z.boolean(),
+  useBilibiliTags: z.boolean()
+});
+
+const aiEnqueueSchema = z.object({
+  videoIds: z.array(idSchema).max(5000).optional(),
+  scope: z
+    .object({
+      type: z.enum(['all', 'filter', 'source']),
+      filter: libraryQuerySchema.optional(),
+      sourceId: idSchema.optional()
+    })
+    .optional(),
+  profileId: idSchema.optional(),
+  force: z.boolean().optional(),
+  limit: z.number().int().min(1).max(5000).optional()
+});
+
+const aiRunQuerySchema = z.object({
+  batchId: idSchema.optional(),
+  status: z.enum(['queued', 'running', 'done', 'failed', 'canceled', 'all']).optional(),
+  limit: z.number().int().min(1).max(500).optional(),
+  offset: z.number().int().min(0).optional()
+});
+
+const aiReviewQuerySchema = z.object({
+  status: z.enum(['pending', 'partial', 'approved', 'rejected', 'all']).optional(),
+  profileId: idSchema.optional(),
+  sourceId: idSchema.optional(),
+  videoId: idSchema.optional(),
+  search: z.string().max(200).optional(),
+  minConfidence: z.number().min(0).max(1).optional(),
+  limit: z.number().int().min(1).max(200).optional(),
+  offset: z.number().int().min(0).optional()
+});
+
+const aiReviewDecisionSchema = z.object({
+  runIds: z.array(idSchema).min(1).max(5000),
+  tagIds: z.array(idSchema).max(5000).optional()
+});
+
+const aiReviewTagPatchSchema = z.object({
+  tagId: idSchema,
+  name: z.string().min(1).max(40).optional(),
+  category: z.string().min(1).max(40).optional(),
+  confidence: z.number().min(0).max(1).optional()
+});
+
+const aiReviewTagAddSchema = z.object({
+  runId: idSchema,
+  category: z.string().min(1).max(40),
+  name: z.string().min(1).max(40),
+  confidence: z.number().min(0).max(1).optional()
+});
+
+const aiReviewTagRemoveSchema = z.object({ tagId: idSchema });
+const aiReviewTagRestoreSchema = z.object({ tagId: idSchema });
+
+const aiReviewUnapproveSchema = z.object({
+  videoId: idSchema,
+  name: z.string().min(1).max(40),
+  category: z.string().min(1).max(40)
+});
+
+const aiAnalysisSchema = z.object({
+  mode: z.enum(['text', 'vision', 'hybrid']),
+  sampleMode: z.enum(['random', 'source', 'up', 'manual']),
+  sampleSize: z.number().int().min(1).max(200),
+  videoIds: z.array(idSchema).max(5000).optional(),
+  providerId: z.string().max(80).optional(),
+  model: z.string().max(200).optional(),
+  profileId: idSchema.optional(),
+  instructions: z.string().max(2000).optional()
+});
+
+const aiAnalysisSaveSchema = z.object({
+  runId: idSchema,
+  name: z.string().min(1).max(120),
+  scope: z.enum(['global', 'source']),
+  sourceId: idSchema.nullable().optional(),
+  isDefault: z.boolean().optional()
+});
+
+const aiConsentHostsSchema = z.array(z.string().max(300)).max(20);
+
 export function registerIpc(windowGetter: WindowGetter): void {
   getWindow = windowGetter;
 
   downloadManager.onChange((snapshot) => send(IPC.eventJobs, snapshot));
   downloadManager.onLibraryChanged(scheduleLibraryBroadcast);
+
+  aiTaggingManager.onQueue((snapshot) => send(IPC.eventAiQueue, snapshot));
+  aiTaggingManager.onProgress((progress) => send(IPC.eventAiProgress, progress));
+  aiTaggingManager.onReviewChanged(() => {
+    send(IPC.eventAiReview);
+    scheduleLibraryBroadcast();
+  });
 
   /* ---------------------------------- app -------------------------------- */
   ipcMain.handle(IPC.appInfo, () => wrap(() => appInfo()));
@@ -230,6 +454,164 @@ export function registerIpc(windowGetter: WindowGetter): void {
     })
   );
 
+  /* ----------------------------------- AI --------------------------------- */
+  ipcMain.handle(IPC.aiProvidersList, () => wrap(() => listProviders()));
+  ipcMain.handle(IPC.aiProvidersSave, (_e, input: AiProviderInput) =>
+    wrap(() => saveProvider(aiProviderSchema.parse(input ?? {})))
+  );
+  ipcMain.handle(IPC.aiProvidersRemove, (_e, id: string) => wrap(() => removeProvider(String(id))));
+  ipcMain.handle(IPC.aiProvidersSetDefault, (_e, id: string) => wrap(() => setDefaultProvider(String(id))));
+  ipcMain.handle(IPC.aiProvidersTest, (_e, id: string) => wrap(() => testProvider(String(id))));
+  ipcMain.handle(IPC.aiProvidersProbe, (_e, input) =>
+    wrap(() => probeProviderModels(aiProviderSchema.parse(input ?? {}) as AiProviderInput))
+  );
+
+  ipcMain.handle(IPC.aiAcrcloudGet, () =>
+    wrap(() => ({ ...getAcrCloudSummary(), callsToday: acrCloudCallsToday() }))
+  );
+  ipcMain.handle(IPC.aiAcrcloudSave, (_e, input) =>
+    wrap(() => {
+      const summary = saveAcrCloud(aiAcrcloudSchema.parse(input ?? {}));
+      return { ...summary, callsToday: acrCloudCallsToday() };
+    })
+  );
+  ipcMain.handle(IPC.aiAcrcloudTest, () => wrap(() => testAcrCloud()));
+
+  ipcMain.handle(IPC.aiProfilesList, () =>
+    wrap(() => {
+      ensureDefaultProfile();
+      return listProfiles();
+    })
+  );
+  ipcMain.handle(IPC.aiProfilesSave, (_e, input: AiTagProfileInput) =>
+    wrap(() => saveProfile(aiProfileSchema.parse(input ?? {})))
+  );
+  ipcMain.handle(IPC.aiProfilesRemove, (_e, id: number) => wrap(() => deleteProfile(idSchema.parse(id))));
+  ipcMain.handle(IPC.aiProfilesSetDefault, (_e, id: number) =>
+    wrap(() => setDefaultProfile(idSchema.parse(id)))
+  );
+  ipcMain.handle(IPC.aiProfilesDuplicate, (_e, id: number) =>
+    wrap(() => duplicateProfile(idSchema.parse(id)))
+  );
+
+  ipcMain.handle(IPC.aiConsentGet, () => wrap(() => getConsent()));
+  ipcMain.handle(IPC.aiConsentAccept, (_e, hosts: string[]) =>
+    wrap(() => {
+      rememberConsentHosts(aiConsentHostsSchema.parse(hosts ?? []));
+      return getConsent();
+    })
+  );
+
+  ipcMain.handle(IPC.aiQueueConsent, (_e, input: AiEnqueueInput) =>
+    wrap(() => aiTaggingManager.consentPreview(aiEnqueueSchema.parse(input ?? {})))
+  );
+  ipcMain.handle(IPC.aiQueueEnqueue, (_e, input: AiEnqueueInput) =>
+    wrap(() => {
+      const result = aiTaggingManager.enqueue(aiEnqueueSchema.parse(input ?? {}));
+      send(IPC.eventAiQueue, aiTaggingManager.snapshot());
+      return result;
+    })
+  );
+  ipcMain.handle(IPC.aiQueueBatches, () => wrap(() => batchSnapshot()));
+  ipcMain.handle(IPC.aiQueuePause, (_e, id: number) =>
+    wrap(() => aiTaggingManager.pause(idSchema.parse(id)))
+  );
+  ipcMain.handle(IPC.aiQueueResume, (_e, id: number) =>
+    wrap(() => aiTaggingManager.resume(idSchema.parse(id)))
+  );
+  ipcMain.handle(IPC.aiQueueCancel, (_e, id: number) =>
+    wrap(() => aiTaggingManager.cancel(idSchema.parse(id)))
+  );
+  ipcMain.handle(IPC.aiQueueRetryFailed, (_e, id: number) =>
+    wrap(() => aiTaggingManager.retryFailed(idSchema.parse(id)))
+  );
+
+  ipcMain.handle(IPC.aiRunsList, (_e, query: AiRunQuery) =>
+    wrap(() => listRuns(aiRunQuerySchema.parse(query ?? {}) as AiRunQuery))
+  );
+  ipcMain.handle(IPC.aiRunsGet, (_e, id: number) => wrap(() => getRun(idSchema.parse(id))));
+
+  ipcMain.handle(IPC.aiReviewList, (_e, query: AiReviewQuery) =>
+    wrap(() => listReview(aiReviewQuerySchema.parse(query ?? {}) as AiReviewQuery))
+  );
+  ipcMain.handle(IPC.aiReviewCounts, () => wrap(() => reviewCounts()));
+  ipcMain.handle(IPC.aiReviewApprove, (_e, input: AiReviewDecision) =>
+    wrap(async () => {
+      const result = await approveReview(aiReviewDecisionSchema.parse(input ?? {}));
+      broadcastLibrary();
+      send(IPC.eventAiReview);
+      return result;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewReject, (_e, input: AiReviewDecision) =>
+    wrap(async () => {
+      const result = await rejectReview(aiReviewDecisionSchema.parse(input ?? {}));
+      send(IPC.eventAiReview);
+      return result;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewUpdateTag, (_e, input: AiReviewTagPatch) =>
+    wrap(async () => {
+      const item = await updateReviewTag(aiReviewTagPatchSchema.parse(input ?? {}));
+      send(IPC.eventAiReview);
+      scheduleLibraryBroadcast();
+      return item;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewAddTag, (_e, input: AiReviewTagAdd) =>
+    wrap(async () => {
+      const item = await addReviewTag(aiReviewTagAddSchema.parse(input ?? {}));
+      send(IPC.eventAiReview);
+      scheduleLibraryBroadcast();
+      return item;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewRemoveTag, (_e, input: AiReviewTagRemove) =>
+    wrap(async () => {
+      const item = await removeReviewTag(aiReviewTagRemoveSchema.parse(input ?? {}));
+      send(IPC.eventAiReview);
+      scheduleLibraryBroadcast();
+      return item;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewRestoreTag, (_e, input: AiReviewTagRestore) =>
+    wrap(async () => {
+      const item = await restoreReviewTag(aiReviewTagRestoreSchema.parse(input ?? {}));
+      send(IPC.eventAiReview);
+      return item;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewUnapprove, (_e, input: AiReviewUnapproveInput) =>
+    wrap(async () => {
+      const result = await unapproveReviewTag(aiReviewUnapproveSchema.parse(input ?? {}));
+      broadcastLibrary();
+      send(IPC.eventAiReview);
+      return result;
+    })
+  );
+
+  ipcMain.handle(IPC.aiTagsList, () => wrap(() => listAiTags()));
+  ipcMain.handle(IPC.aiStats, () => wrap(() => aiStats()));
+
+  ipcMain.handle(IPC.aiAnalysisEstimate, (_e, input: AiAnalysisInput) =>
+    wrap(() => estimateAnalysis(aiAnalysisSchema.parse(input ?? {}) as AiAnalysisInput))
+  );
+  ipcMain.handle(IPC.aiAnalysisRun, (_e, input: AiAnalysisInput) =>
+    wrap(async () => {
+      const parsed = aiAnalysisSchema.parse(input ?? {}) as AiAnalysisInput;
+      const run = await runAnalysis(parsed, (progress) => send(IPC.eventAiAnalysis, progress));
+      send(IPC.eventAiAnalysis, { stage: 'merge', done: 1, total: 1, message: '分析完成' });
+      return run;
+    })
+  );
+  ipcMain.handle(IPC.aiAnalysisHistory, () => wrap(() => analysisHistory()));
+  ipcMain.handle(IPC.aiAnalysisGet, (_e, id: number) => wrap(() => analysisRun(idSchema.parse(id))));
+  ipcMain.handle(IPC.aiAnalysisSaveAsProfile, (_e, input: AiAnalysisSaveInput) =>
+    wrap(() => saveAnalysisAsProfile(aiAnalysisSaveSchema.parse(input ?? {})))
+  );
+
+  ipcMain.handle(IPC.aiMaintenanceCleanup, () => wrap(() => cleanupAiCache(getSettings().aiCacheDays)));
+
   /* -------------------------------- library ------------------------------ */
   ipcMain.handle(IPC.libraryQuery, (_e, query: LibraryQuery) =>
     wrap(() => queryVideos(libraryQuerySchema.parse(query ?? {}) as LibraryQuery))
@@ -239,7 +621,10 @@ export function registerIpc(windowGetter: WindowGetter): void {
 
   ipcMain.handle(IPC.libraryUpdate, (_e, id: number, patch: UpdateVideoPatch) =>
     wrap(async () => {
-      const result = updateVideo(idSchema.parse(id), updatePatchSchema.parse(patch ?? {}) as UpdateVideoPatch);
+      const result = updateVideo(
+        idSchema.parse(id),
+        updatePatchSchema.parse(patch ?? {}) as UpdateVideoPatch
+      );
       if (result) await writeSidecar(result.id);
       broadcastLibrary();
       return result;
@@ -280,7 +665,21 @@ export function registerIpc(windowGetter: WindowGetter): void {
         filters: [
           {
             name: '视频/音频',
-            extensions: ['mp4', 'mkv', 'webm', 'mov', 'flv', 'm4v', 'avi', 'ts', 'm4a', 'mp3', 'flac', 'wav', 'ogg']
+            extensions: [
+              'mp4',
+              'mkv',
+              'webm',
+              'mov',
+              'flv',
+              'm4v',
+              'avi',
+              'ts',
+              'm4a',
+              'mp3',
+              'flac',
+              'wav',
+              'ogg'
+            ]
           }
         ]
       });
@@ -543,9 +942,13 @@ export function registerIpc(windowGetter: WindowGetter): void {
   );
 
   /* --------------------------------- jobs -------------------------------- */
-  ipcMain.handle(IPC.jobsList, () => wrap(() => ({ items: listJobs(), total: jobTotalCount() })));
+  ipcMain.handle(IPC.jobsList, () =>
+    wrap(() => ({ items: listJobs(), total: jobTotalCount(), counts: jobStatusCounts() }))
+  );
   ipcMain.handle(IPC.jobsPause, (_e, id: number) => wrap(() => downloadManager.pause(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsResume, (_e, id: number) => wrap(() => downloadManager.resume(idSchema.parse(id))));
+  ipcMain.handle(IPC.jobsPauseAll, () => wrap(() => downloadManager.pauseAll()));
+  ipcMain.handle(IPC.jobsResumeAll, () => wrap(() => downloadManager.resumeAll()));
   ipcMain.handle(IPC.jobsCancel, (_e, id: number) => wrap(() => downloadManager.cancel(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsRetry, (_e, id: number) => wrap(() => downloadManager.retry(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsClear, () => wrap(() => downloadManager.clearFinished()));

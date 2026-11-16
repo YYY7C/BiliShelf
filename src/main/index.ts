@@ -1,16 +1,19 @@
-import { app, BrowserWindow, nativeTheme, session, shell } from 'electron';
+import { app, BrowserWindow, Menu, Tray, nativeImage, nativeTheme, session, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import log from 'electron-log/main';
+import type { JobStatusCounts } from '@shared/types';
 import { closeDatabase, openDatabase } from './db/index';
 import { recoverInterruptedSyncRuns } from './db/sources';
 import { reconcileFileStatus } from './db/videos';
 import { registerAppProtocol, registerPrivilegedSchemes } from './protocol';
 import { broadcastLibrary, registerIpc } from './ipc';
 import { downloadManager } from './services/downloads';
+import { aiTaggingManager } from './services/ai/tagging';
 import { biliSession, configureBiliSession, getAuthStatus } from './services/auth';
 import { engineStatusAsync } from './engine/tools';
 import { ensureLibraryDirs, fromLibraryRelative, libraryPaths } from './paths';
+import { getSettings } from './store';
 
 const DEV_URL = process.env['ELECTRON_RENDERER_URL'];
 
@@ -22,6 +25,11 @@ log.errorHandler.startCatching({ showDialog: false });
 registerPrivilegedSchemes();
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let trayCounts: JobStatusCounts = { active: 0, pausable: 0, queued: 0, paused: 0 };
+let traySyncAt = 0;
+let trayHintShown = false;
+let quitting = false;
 
 function installContentSecurityPolicy(): void {
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
@@ -81,6 +89,108 @@ function hardenWindow(window: BrowserWindow): void {
   window.webContents.on('will-attach-webview', (event) => event.preventDefault());
 }
 
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    mainWindow = createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/** 托盘图标：Windows 直接用多尺寸 .ico，其他平台用 PNG 缩到 16px。 */
+function trayIcon(): Electron.NativeImage {
+  const base = app.getAppPath();
+  const icoPath = path.join(base, 'resources', 'icon.ico');
+  const pngPath = path.join(base, 'resources', 'icon.png');
+  if (process.platform === 'win32' && fs.existsSync(icoPath)) {
+    const ico = nativeImage.createFromPath(icoPath);
+    if (!ico.isEmpty()) return ico;
+  }
+  const png = fs.existsSync(pngPath) ? nativeImage.createFromPath(pngPath) : nativeImage.createEmpty();
+  return png.isEmpty() ? png : png.resize({ width: 16, height: 16, quality: 'best' });
+}
+
+function buildTrayMenu(): Menu {
+  const counts = trayCounts;
+  return Menu.buildFromTemplate([
+    { label: '显示主窗口', click: () => showMainWindow() },
+    { type: 'separator' },
+    { label: `进行中 ${counts.active} · 排队 ${counts.queued} · 已暂停 ${counts.paused}`, enabled: false },
+    {
+      label: '全部暂停下载',
+      enabled: counts.pausable + counts.queued > 0,
+      click: () => downloadManager.pauseAll()
+    },
+    { label: '全部开始下载', enabled: counts.paused > 0, click: () => downloadManager.resumeAll() },
+    { type: 'separator' },
+    { label: '打开素材库目录', click: () => void shell.openPath(libraryPaths().root) },
+    { label: '打开日志目录', click: () => void shell.openPath(libraryPaths().logs) },
+    { type: 'separator' },
+    { label: '退出 BiliShelf', click: () => quitApp() }
+  ]);
+}
+
+/** 下载进度事件很密集，托盘标题/菜单最多 2 秒刷一次。 */
+function syncTray(force = false): void {
+  if (!tray) return;
+  const now = Date.now();
+  if (!force && now - traySyncAt < 2000) return;
+  traySyncAt = now;
+  const counts = trayCounts;
+  tray.setToolTip(`BiliShelf · 下载中 ${counts.active} · 排队 ${counts.queued} · 已暂停 ${counts.paused}`);
+  tray.setContextMenu(buildTrayMenu());
+}
+
+function quitApp(): void {
+  quitting = true;
+  app.quit();
+}
+
+/** 设置读取失败时保持托盘常驻，避免误把后台下载一起关掉。 */
+function closeToTrayEnabled(): boolean {
+  try {
+    return getSettings().closeToTray !== false;
+  } catch {
+    return true;
+  }
+}
+
+function hideToTray(window: BrowserWindow): void {
+  window.hide();
+  syncTray(true);
+  if (trayHintShown) return;
+  trayHintShown = true;
+  try {
+    tray?.displayBalloon({
+      title: 'BiliShelf 仍在后台运行',
+      content: '下载与打标会继续。点击托盘图标可重新打开，右键可以暂停下载或退出。',
+      iconType: 'info'
+    });
+  } catch (error) {
+    log.warn('[app] tray balloon failed', (error as Error).message);
+  }
+}
+
+function createTray(): void {
+  if (tray) return;
+  const image = trayIcon();
+  if (image.isEmpty()) {
+    log.warn('[app] tray icon missing, background mode unavailable');
+    return;
+  }
+  tray = new Tray(image);
+  tray.on('click', () => {
+    const visible =
+      mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized();
+    if (visible) mainWindow?.hide();
+    else showMainWindow();
+  });
+  syncTray(true);
+  log.info('[app] tray ready');
+}
+
 function createWindow(): BrowserWindow {
   const iconPath = path.join(app.getAppPath(), 'resources', 'icon.png');
   const window = new BrowserWindow({
@@ -107,6 +217,14 @@ function createWindow(): BrowserWindow {
 
   window.once('ready-to-show', () => window.show());
 
+  window.on('show', () => syncTray(true));
+  window.on('close', (event) => {
+    if (quitting) return;
+    if (!closeToTrayEnabled()) return;
+    event.preventDefault();
+    hideToTray(window);
+  });
+
   if (DEV_URL) {
     void window.loadURL(DEV_URL);
   } else {
@@ -125,9 +243,7 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    showMainWindow();
   });
 
   app.setAppUserModelId('local.bilishelf.app');
@@ -154,7 +270,13 @@ if (!gotLock) {
 
     mainWindow = createWindow();
     registerIpc(() => mainWindow);
+    createTray();
+    downloadManager.onChange((snapshot) => {
+      trayCounts = snapshot.counts;
+      syncTray();
+    });
     downloadManager.start();
+    aiTaggingManager.start();
 
     // 开发自检：BILISHELF_CAPTURE=<png 路径> 时截图后退出
     const captureTarget = process.env['BILISHELF_CAPTURE'];
@@ -237,16 +359,25 @@ if (!gotLock) {
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         mainWindow = createWindow();
+      } else {
+        showMainWindow();
       }
     });
   });
 
   app.on('window-all-closed', () => {
+    if (quitting) return;
+    // 收进托盘模式下应用常驻后台继续下载
+    if (closeToTrayEnabled()) return;
     if (process.platform !== 'darwin') app.quit();
   });
 
   app.on('before-quit', () => {
+    quitting = true;
+    tray?.destroy();
+    tray = null;
     downloadManager.shutdown();
+    aiTaggingManager.shutdown();
     closeDatabase();
   });
 }

@@ -56,9 +56,19 @@ export function defaultSettings(): AppSettings {
     coverBackdropOpacity: 82,
     coverBackdropDim: 55,
     sidebarTransparent: true,
+    closeToTray: true,
     ytdlpPath: '',
     ffmpegPath: '',
-    requestDelayMs: 600
+    requestDelayMs: 600,
+    aiFrameCount: 3,
+    aiFrameWidth: 768,
+    aiIncludeCover: true,
+    aiConcurrency: 2,
+    aiRequestDelayMs: 300,
+    aiTimeoutMs: 120000,
+    aiMaxRetries: 2,
+    aiMaxToolRounds: 3,
+    aiCacheDays: 30
   };
 }
 
@@ -107,6 +117,30 @@ function sanitize(input: AppSettings): AppSettings {
   const delay = Number.isFinite(input.requestDelayMs)
     ? Math.min(5000, Math.max(200, Math.round(input.requestDelayMs)))
     : 600;
+  const aiFrameCount = Number.isFinite(input.aiFrameCount)
+    ? Math.min(8, Math.max(0, Math.round(input.aiFrameCount)))
+    : 3;
+  const aiFrameWidth = Number.isFinite(input.aiFrameWidth)
+    ? Math.min(1600, Math.max(256, Math.round(input.aiFrameWidth)))
+    : 768;
+  const aiConcurrency = Number.isFinite(input.aiConcurrency)
+    ? Math.min(4, Math.max(1, Math.round(input.aiConcurrency)))
+    : 2;
+  const aiRequestDelayMs = Number.isFinite(input.aiRequestDelayMs)
+    ? Math.min(5000, Math.max(0, Math.round(input.aiRequestDelayMs)))
+    : 300;
+  const aiTimeoutMs = Number.isFinite(input.aiTimeoutMs)
+    ? Math.min(600_000, Math.max(15_000, Math.round(input.aiTimeoutMs)))
+    : 120_000;
+  const aiMaxRetries = Number.isFinite(input.aiMaxRetries)
+    ? Math.min(5, Math.max(0, Math.round(input.aiMaxRetries)))
+    : 2;
+  const aiMaxToolRounds = Number.isFinite(input.aiMaxToolRounds)
+    ? Math.min(5, Math.max(0, Math.round(input.aiMaxToolRounds)))
+    : 3;
+  const aiCacheDays = Number.isFinite(input.aiCacheDays)
+    ? Math.min(365, Math.max(1, Math.round(input.aiCacheDays)))
+    : 30;
   return {
     libraryRoot: String(input.libraryRoot || defaultLibraryRoot()).trim(),
     defaultQuality: qualities.includes(input.defaultQuality) ? input.defaultQuality : 'compat',
@@ -127,9 +161,19 @@ function sanitize(input: AppSettings): AppSettings {
       ? Math.min(100, Math.max(0, Math.round(input.coverBackdropDim)))
       : 55,
     sidebarTransparent: input.sidebarTransparent !== false,
+    closeToTray: input.closeToTray !== false,
     ytdlpPath: String(input.ytdlpPath || '').trim(),
     ffmpegPath: String(input.ffmpegPath || '').trim(),
-    requestDelayMs: delay
+    requestDelayMs: delay,
+    aiFrameCount,
+    aiFrameWidth,
+    aiIncludeCover: input.aiIncludeCover !== false,
+    aiConcurrency,
+    aiRequestDelayMs,
+    aiTimeoutMs,
+    aiMaxRetries,
+    aiMaxToolRounds,
+    aiCacheDays
   };
 }
 
