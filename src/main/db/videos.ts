@@ -316,6 +316,23 @@ export function getVideo(id: number): VideoItem | null {
   return decorate([row])[0] ?? null;
 }
 
+/**
+ * 批量取视频（保留传入顺序）。库级分析一次要取上千条，
+ * 逐条 getVideo 会退化成上千次带标签/资源查询。
+ */
+export function getVideos(ids: number[]): VideoItem[] {
+  if (ids.length === 0) return [];
+  const byId = new Map<number, VideoItem>();
+  const CHUNK = 500;
+  for (let index = 0; index < ids.length; index += CHUNK) {
+    const chunk = ids.slice(index, index + CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    const rows = all<VideoRow>(`${SELECT_BASE} WHERE v.id IN (${placeholders})`, chunk);
+    for (const item of decorate(rows)) byId.set(item.id, item);
+  }
+  return ids.map((id) => byId.get(id)).filter((item): item is VideoItem => Boolean(item));
+}
+
 export function getVideoRow(id: number): VideoRow | undefined {
   return one<VideoRow>(`${SELECT_BASE} WHERE v.id = ?`, [id]);
 }

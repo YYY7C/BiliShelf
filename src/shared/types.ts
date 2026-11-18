@@ -442,6 +442,8 @@ export interface AiProviderSummary {
   capabilities: AiCapabilities;
   temperature: number;
   maxTokens: number;
+  /** 模型上下文窗口（探测 /models 时回填），用于库级分析的自适应分批 */
+  contextWindow?: number;
   timeoutMs: number;
   maxRetries: number;
   imageDetail: AiImageDetail;
@@ -462,6 +464,7 @@ export interface AiProviderInput {
   capabilities: AiCapabilities;
   temperature: number;
   maxTokens: number;
+  contextWindow?: number;
   timeoutMs: number;
   maxRetries: number;
   imageDetail: AiImageDetail;

@@ -1,6 +1,6 @@
 import clsx from 'clsx';
-import { Brain, CheckCircle2, Loader2, Play, Save, Sparkles } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, Brain, CheckCircle2, Loader2, Play, Save, Sparkles } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   AiAnalysisEstimate,
   AiAnalysisInput,
@@ -11,6 +11,7 @@ import type {
   SourceSummary,
   VideoItem
 } from '@shared/types';
+import { MAX_ANALYSIS_SAMPLES, MIN_SAMPLES_PER_GROUP } from '@shared/aiDefaults';
 import { api } from '../../lib/bridge';
 import { useUi } from '../../lib/store';
 import { categoryClass, formatTokens } from '../../lib/ai';
@@ -18,6 +19,12 @@ import { Button, Field, Select, TextInput, Toggle } from '../ui';
 
 type AnalysisMode = AiAnalysisInput['mode'];
 type SampleMode = AiAnalysisInput['sampleMode'];
+
+const MODE_LABEL: Record<AiAnalysisRun['mode'], string> = {
+  text: '仅文本',
+  vision: '仅视觉',
+  hybrid: '混合'
+};
 
 export function AiAnalysisView() {
   const pushToast = useUi((state) => state.pushToast);
@@ -42,6 +49,13 @@ export function AiAnalysisView() {
   const [saveSourceId, setSaveSourceId] = useState<number | null>(null);
   const [saveDefault, setSaveDefault] = useState(false);
   const [busy, setBusy] = useState(false);
+  const resultRef = useRef<HTMLDivElement | null>(null);
+
+  // 结果面板在表单下方，跑完自动滚过去，否则看起来像「点了没反应」
+  useEffect(() => {
+    if (!result) return;
+    resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [result]);
 
   const input = useMemo<AiAnalysisInput>(
     () => ({
@@ -122,15 +136,22 @@ export function AiAnalysisView() {
     setRunning(true);
     setProgress(null);
     setResult(null);
+    let ok = false;
     try {
       const next = await api.ai.analysis.run(input);
       setResult(next);
-      setHistory((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+      ok = true;
       pushToast('success', '库级分析完成');
     } catch (error) {
       pushToast('error', (error as Error).message);
     } finally {
       setRunning(false);
+      // 失败也要刷新，否则失败的运行既看不到记录也看不到原因
+      const next = await api.ai.analysis.history().catch(() => null);
+      if (next) {
+        setHistory(next);
+        if (!ok) setResult(next[0] ?? null);
+      }
     }
   };
 
@@ -176,7 +197,7 @@ export function AiAnalysisView() {
       </div>
 
       <div className="scroll-thin scroll-stable min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="grid min-h-full items-start gap-3 lg:grid-cols-[minmax(0,1.05fr)_minmax(340px,0.95fr)]">
+        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,1.05fr)_minmax(340px,0.95fr)]">
           <div className="space-y-3 self-start">
             <div className="rounded-xl border border-line/70 bg-panel/35 p-3">
               <div className="grid gap-2 md:grid-cols-2">
@@ -215,12 +236,16 @@ export function AiAnalysisView() {
                 </Field>
                 <Field
                   label="采样数量"
-                  hint={sampleMode === 'manual' ? '手动模式下以勾选数量为准。' : '默认 24 条，最多 200 条。'}
+                  hint={
+                    sampleMode === 'manual'
+                      ? '手动模式下以勾选数量为准。'
+                      : `默认 24 条，最多 ${MAX_ANALYSIS_SAMPLES} 条；按来源 / UP 分层时每组保底 ${MIN_SAMPLES_PER_GROUP} 条，必要时自动提升样本数。`
+                  }
                 >
                   <TextInput
                     type="number"
                     min={1}
-                    max={200}
+                    max={MAX_ANALYSIS_SAMPLES}
                     value={sampleSize}
                     onChange={(event) => setSampleSize(Number(event.target.value) || 24)}
                     disabled={sampleMode === 'manual'}
@@ -314,8 +339,13 @@ export function AiAnalysisView() {
                     className="flex w-full items-center gap-2 rounded-lg border border-line/50 bg-panel2/40 px-2 py-1 text-left text-[10.5px] transition-colors hover:border-line"
                   >
                     <span className="font-mono text-dim">#{item.id}</span>
-                    <span className="min-w-0 flex-1 truncate text-muted">
-                      {item.result?.summary ?? item.mode}
+                    <span
+                      className="min-w-0 flex-1 truncate text-muted"
+                      title={item.error ?? item.result?.summary ?? MODE_LABEL[item.mode]}
+                    >
+                      {item.status === 'failed' && item.error
+                        ? item.error
+                        : (item.result?.summary ?? MODE_LABEL[item.mode])}
                     </span>
                     <span
                       className={clsx(
@@ -405,102 +435,129 @@ export function AiAnalysisView() {
           </div>
         ) : null}
 
-        {result?.result ? (
-          <div className="mt-3 rounded-xl border border-line/70 bg-panel/35 p-3">
-            <div className="flex items-center gap-2">
-              <Sparkles size={14} className="text-pink" />
-              <span className="text-[12.5px] font-medium text-fg">分析结果</span>
-              <span className="text-[10.5px] text-dim">
-                {result.result.categories.length} 个分类 · {result.result.focus.length} 个关注点
-              </span>
-            </div>
-            <p className="mt-1.5 text-[11.5px] leading-5 text-muted">{result.result.summary}</p>
-            <div className="mt-2 grid gap-2 md:grid-cols-2">
-              {result.result.categories.map((category) => (
-                <div key={category.name} className="rounded-lg border border-line/60 bg-panel2/40 p-2">
-                  <div className="flex items-center gap-1.5">
-                    <span
-                      className={clsx(
-                        'rounded border px-1.5 py-0.5 text-[10px]',
-                        categoryClass(category.name)
-                      )}
-                    >
-                      {category.name}
-                    </span>
-                    <span className="truncate text-[10px] text-dim">{category.description}</span>
-                  </div>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {category.tags.slice(0, 16).map((tag) => (
-                      <span
-                        key={tag}
-                        className="rounded border border-line bg-panel px-1 py-0.5 text-[10px] text-muted"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1">
-              <span className="text-[10.5px] text-dim">关注点：</span>
-              {result.result.focus.map((focus) => (
-                <span key={focus} className="rounded bg-pink/10 px-1.5 py-0.5 text-[10px] text-pink">
-                  {focus}
+        <div ref={resultRef}>
+          {result && !result.result && result.status === 'failed' ? (
+            <div className="mt-3 rounded-xl border border-red/30 bg-red/[0.06] p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <AlertTriangle size={14} className="text-red" />
+                <span className="text-[12.5px] font-medium text-fg">分析失败</span>
+                <span className="font-mono text-[10px] text-dim">#{result.id}</span>
+                <span className="ml-auto text-[10px] text-dim">
+                  {result.model ?? '未知模型'} · 输入 {formatTokens(result.inputTokens)} / 输出{' '}
+                  {formatTokens(result.outputTokens)} tokens
                 </span>
-              ))}
+              </div>
+              <p className="mt-1.5 whitespace-pre-wrap text-[11.5px] leading-5 text-red/90">{result.error}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="subtle" onClick={() => void run()} disabled={running}>
+                  <Play size={11} />
+                  重新分析
+                </Button>
+                <span className="max-w-[520px] text-[10px] leading-4 text-dim">
+                  常见原因：推理模型把输出额度用在了推理上（提高 Provider
+                  输出上限即可）、样本过多导致输出被截断，或网关不支持 JSON 模式。
+                </span>
+              </div>
             </div>
-            <details className="mt-2 rounded-lg border border-line/60 bg-panel2/40 px-2 py-1.5">
-              <summary className="cursor-pointer text-[10.5px] text-muted">
-                查看生成的系统提示词与模板
-              </summary>
-              <pre className="scroll-thin mt-1 max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-4 text-dim">
-                {result.result.systemPrompt}
-                {'\n\n--- 用户模板 ---\n\n'}
-                {result.result.promptTemplate}
-              </pre>
-            </details>
+          ) : null}
 
-            <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto_auto_auto]">
-              <TextInput
-                value={saveName}
-                onChange={(event) => setSaveName(event.target.value)}
-                placeholder="方案名称"
-              />
-              <Select
-                value={saveScope}
-                onChange={(value) => setSaveScope(value as 'global' | 'source')}
-                options={[
-                  { value: 'global', label: '全局方案' },
-                  { value: 'source', label: '来源覆盖' }
-                ]}
-              />
-              {saveScope === 'source' ? (
-                <Select
-                  value={saveSourceId ? String(saveSourceId) : ''}
-                  onChange={(value) => setSaveSourceId(value ? Number(value) : null)}
-                  options={sources.map((source) => ({ value: String(source.id), label: source.title }))}
+          {result?.result ? (
+            <div className="mt-3 rounded-xl border border-line/70 bg-panel/35 p-3">
+              <div className="flex items-center gap-2">
+                <Sparkles size={14} className="text-pink" />
+                <span className="text-[12.5px] font-medium text-fg">分析结果</span>
+                <span className="text-[10.5px] text-dim">
+                  {result.result.categories.length} 个分类 · {result.result.focus.length} 个关注点
+                </span>
+              </div>
+              <p className="mt-1.5 text-[11.5px] leading-5 text-muted">{result.result.summary}</p>
+              <div className="mt-2 grid gap-2 md:grid-cols-2">
+                {result.result.categories.map((category) => (
+                  <div key={category.name} className="rounded-lg border border-line/60 bg-panel2/40 p-2">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={clsx(
+                          'rounded border px-1.5 py-0.5 text-[10px]',
+                          categoryClass(category.name)
+                        )}
+                      >
+                        {category.name}
+                      </span>
+                      <span className="truncate text-[10px] text-dim">{category.description}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {category.tags.slice(0, 16).map((tag) => (
+                        <span
+                          key={tag}
+                          className="rounded border border-line bg-panel px-1 py-0.5 text-[10px] text-muted"
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1">
+                <span className="text-[10.5px] text-dim">关注点：</span>
+                {result.result.focus.map((focus) => (
+                  <span key={focus} className="rounded bg-pink/10 px-1.5 py-0.5 text-[10px] text-pink">
+                    {focus}
+                  </span>
+                ))}
+              </div>
+              <details className="mt-2 rounded-lg border border-line/60 bg-panel2/40 px-2 py-1.5">
+                <summary className="cursor-pointer text-[10.5px] text-muted">
+                  查看生成的系统提示词与模板
+                </summary>
+                <pre className="scroll-thin mt-1 max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-4 text-dim">
+                  {result.result.systemPrompt}
+                  {'\n\n--- 用户模板 ---\n\n'}
+                  {result.result.promptTemplate}
+                </pre>
+              </details>
+
+              <div className="mt-2 grid gap-2 md:grid-cols-[1fr_auto_auto_auto]">
+                <TextInput
+                  value={saveName}
+                  onChange={(event) => setSaveName(event.target.value)}
+                  placeholder="方案名称"
                 />
-              ) : (
-                <div />
-              )}
-              <Button variant="primary" size="sm" onClick={() => void save()} disabled={busy}>
-                <Save size={11} />
-                保存为方案
-              </Button>
+                <Select
+                  value={saveScope}
+                  onChange={(value) => setSaveScope(value as 'global' | 'source')}
+                  options={[
+                    { value: 'global', label: '全局方案' },
+                    { value: 'source', label: '来源覆盖' }
+                  ]}
+                />
+                {saveScope === 'source' ? (
+                  <Select
+                    value={saveSourceId ? String(saveSourceId) : ''}
+                    onChange={(value) => setSaveSourceId(value ? Number(value) : null)}
+                    options={sources.map((source) => ({ value: String(source.id), label: source.title }))}
+                  />
+                ) : (
+                  <div />
+                )}
+                <Button variant="primary" size="sm" onClick={() => void save()} disabled={busy}>
+                  <Save size={11} />
+                  保存为方案
+                </Button>
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <Toggle checked={saveDefault} onChange={setSaveDefault} label="保存后设为全局默认方案" />
+                {profiles.length > 0 ? (
+                  <span className="text-[10px] text-dim">已有 {profiles.length} 个方案</span>
+                ) : null}
+                <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-green">
+                  <CheckCircle2 size={10} />
+                  可继续在「标签方案」编辑
+                </span>
+              </div>
             </div>
-            <div className="mt-1 flex items-center gap-2">
-              <Toggle checked={saveDefault} onChange={setSaveDefault} label="保存后设为全局默认方案" />
-              {profiles.length > 0 ? (
-                <span className="text-[10px] text-dim">已有 {profiles.length} 个方案</span>
-              ) : null}
-              <span className="ml-auto inline-flex items-center gap-1 text-[10px] text-green">
-                <CheckCircle2 size={10} />
-                可继续在「标签方案」编辑
-              </span>
-            </div>
-          </div>
-        ) : null}
+          ) : null}
+        </div>
       </div>
     </div>
   );

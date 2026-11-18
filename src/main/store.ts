@@ -88,7 +88,8 @@ class SettingsStore {
     if (this.cache) return this.cache;
     const base = defaultSettings();
     try {
-      const raw = fs.readFileSync(this.file, 'utf8');
+      // 用户可能用记事本/编辑器手改，Windows 工具常写入 BOM；不清掉会让 JSON.parse 直接抛错并回落默认值
+      const raw = fs.readFileSync(this.file, 'utf8').replace(/^\uFEFF/, '');
       const parsed = JSON.parse(raw) as Partial<AppSettings>;
       this.cache = sanitize({ ...base, ...parsed });
     } catch {
@@ -124,7 +125,7 @@ function sanitize(input: AppSettings): AppSettings {
     ? Math.min(1600, Math.max(256, Math.round(input.aiFrameWidth)))
     : 768;
   const aiConcurrency = Number.isFinite(input.aiConcurrency)
-    ? Math.min(4, Math.max(1, Math.round(input.aiConcurrency)))
+    ? Math.min(10, Math.max(1, Math.round(input.aiConcurrency)))
     : 2;
   const aiRequestDelayMs = Number.isFinite(input.aiRequestDelayMs)
     ? Math.min(5000, Math.max(0, Math.round(input.aiRequestDelayMs)))

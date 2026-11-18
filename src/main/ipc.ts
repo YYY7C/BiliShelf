@@ -126,6 +126,7 @@ import {
   runAnalysis,
   saveAnalysisAsProfile
 } from './services/ai/analysis';
+import { MAX_ANALYSIS_SAMPLES } from '@shared/aiDefaults';
 import { cleanupAiCache } from './services/ai/frames';
 
 type WindowGetter = () => BrowserWindow | null;
@@ -234,6 +235,7 @@ const aiProviderSchema = z.object({
   }),
   temperature: z.number().min(0).max(2),
   maxTokens: z.number().int().min(128).max(32000),
+  contextWindow: z.number().int().min(1024).max(10_000_000).optional(),
   timeoutMs: z.number().int().min(10_000).max(600_000),
   maxRetries: z.number().int().min(0).max(5),
   imageDetail: z.enum(['low', 'auto', 'high']),
@@ -357,7 +359,7 @@ const aiReviewUnapproveSchema = z.object({
 const aiAnalysisSchema = z.object({
   mode: z.enum(['text', 'vision', 'hybrid']),
   sampleMode: z.enum(['random', 'source', 'up', 'manual']),
-  sampleSize: z.number().int().min(1).max(200),
+  sampleSize: z.number().int().min(1).max(MAX_ANALYSIS_SAMPLES),
   videoIds: z.array(idSchema).max(5000).optional(),
   providerId: z.string().max(80).optional(),
   model: z.string().max(200).optional(),

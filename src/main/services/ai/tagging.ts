@@ -341,7 +341,7 @@ export class AiTaggingManager {
     this.pumping = true;
     try {
       const settings = getSettings();
-      const limit = Math.min(4, Math.max(1, settings.aiConcurrency));
+      const limit = Math.min(10, Math.max(1, settings.aiConcurrency));
       while (this.active.size < limit) {
         const row = getNextQueuedRun();
         if (!row) break;

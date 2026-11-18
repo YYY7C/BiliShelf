@@ -725,6 +725,15 @@ export function recoverInterruptedRuns(): number {
     run("UPDATE ai_runs SET status = 'queued', stage = NULL WHERE status = 'running'");
     run("UPDATE ai_batches SET status = 'queued', started_at = NULL WHERE status = 'running'");
   }
+  // 库级分析是一次性的同步调用，进程退出后无法续跑，标记失败避免历史里一直显示「分析中」
+  run(
+    `UPDATE ai_analysis_runs
+        SET status = 'failed',
+            error = COALESCE(error, '应用退出导致分析中断'),
+            finished_at = COALESCE(finished_at, ?)
+      WHERE status IN ('queued','running')`,
+    [now()]
+  );
   return count;
 }
 

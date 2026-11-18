@@ -58,6 +58,8 @@ export interface AiChatResponse {
   text: string;
   toolCalls: AiToolCall[];
   usage: { inputTokens: number; outputTokens: number };
+  /** 模型给出的结束原因：length 表示被 max_tokens 截断，推理模型很容易踩到。 */
+  finishReason?: string | null;
   raw: unknown;
 }
 
@@ -65,15 +67,25 @@ export interface AiProviderAdapter {
   chat(request: AiChatRequest): Promise<AiChatResponse>;
 }
 
+export type AiChatErrorKind = 'http' | 'timeout' | 'empty' | 'truncated';
+
 export class AiChatError extends Error {
   readonly status: number | null;
   readonly retryable: boolean;
+  /** 失败类型：截断要加大输出预算，超时/空响应不能盲目加预算，HTTP 错误要看具体报文 */
+  readonly kind: AiChatErrorKind;
 
-  constructor(message: string, status: number | null = null, retryable = false) {
+  constructor(
+    message: string,
+    status: number | null = null,
+    retryable = false,
+    kind: AiChatErrorKind = 'http'
+  ) {
     super(message);
     this.name = 'AiChatError';
     this.status = status;
     this.retryable = retryable;
+    this.kind = kind;
   }
 }
 
@@ -153,12 +165,13 @@ async function requestJson(
     return { status: response.status, ok: response.ok, text, json };
   } catch (error) {
     if ((error as Error).name === 'AbortError') {
-      throw new AiChatError('请求超时或已取消', null, true);
+      throw new AiChatError('请求超时或已取消', null, true, 'timeout');
     }
     throw new AiChatError(
       `网络请求失败：${(error as Error).message}。如使用代理，请确认系统代理或 Clash 已开启。`,
       null,
-      true
+      true,
+      'http'
     );
   } finally {
     cleanup();
@@ -307,7 +320,7 @@ class OpenAiAdapter implements AiProviderAdapter {
       }
     }
     assertOk(result, '模型请求失败');
-    return parseOpenAiResponse(result.json);
+    return parseOpenAiResponse(result.json, request.maxTokens);
   }
 }
 
@@ -368,17 +381,21 @@ function buildOpenAiMessages(request: AiChatRequest): unknown[] {
   return messages;
 }
 
-function parseOpenAiResponse(json: unknown): AiChatResponse {
+export function parseOpenAiResponse(json: unknown, maxTokens: number): AiChatResponse {
   const data = json as {
     choices?: Array<{
+      finish_reason?: string | null;
       message?: {
         content?: string | Array<{ type?: string; text?: string }> | null;
+        reasoning_content?: string | null;
+        reasoning?: string | null;
         tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>;
       };
     }>;
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   } | null;
-  const message = data?.choices?.[0]?.message;
+  const choice = data?.choices?.[0];
+  const message = choice?.message;
   if (!message) throw new AiChatError('模型返回为空', null, true);
   const content = message.content;
   const text =
@@ -397,6 +414,19 @@ function parseOpenAiResponse(json: unknown): AiChatResponse {
       args: parseArgs(call.function?.arguments)
     }))
     .filter((call) => Boolean(call.name));
+  const finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : null;
+  // 推理模型会先输出 reasoning 再输出 content；预算不足时正文可能为空，需要给出可读原因。
+  if (!text.trim() && toolCalls.length === 0) {
+    const reasoning = message.reasoning_content ?? message.reasoning ?? '';
+    throw new AiChatError(
+      finishReason === 'length'
+        ? `模型输出被 max_tokens=${maxTokens} 截断：推理内容占满了全部额度，未返回正文。请提高该 Provider 的输出上限，或改用非推理模型。`
+        : `模型返回空内容${reasoning ? `（推理 ${reasoning.length} 字被截断）` : ''}`,
+      null,
+      true,
+      finishReason === 'length' ? 'truncated' : 'empty'
+    );
+  }
   return {
     text: text.trim(),
     toolCalls,
@@ -404,6 +434,7 @@ function parseOpenAiResponse(json: unknown): AiChatResponse {
       inputTokens: numberOrZero(data?.usage?.prompt_tokens),
       outputTokens: numberOrZero(data?.usage?.completion_tokens)
     },
+    finishReason,
     raw: json
   };
 }
@@ -499,6 +530,7 @@ function parseAnthropicResponse(json: unknown): AiChatResponse {
       name?: string;
       input?: unknown;
     }>;
+    stop_reason?: string | null;
     usage?: { input_tokens?: number; output_tokens?: number };
   } | null;
   if (!data?.content) throw new AiChatError('Anthropic 返回为空', null, true);
@@ -515,6 +547,17 @@ function parseAnthropicResponse(json: unknown): AiChatResponse {
       args: parseArgs(block.input)
     }))
     .filter((call) => Boolean(call.name));
+  const finishReason = typeof data.stop_reason === 'string' ? data.stop_reason : null;
+  if (!text && toolCalls.length === 0) {
+    throw new AiChatError(
+      finishReason === 'max_tokens'
+        ? '模型输出被 max_tokens 截断，未返回正文。请提高该 Provider 的输出上限。'
+        : '模型返回空内容',
+      null,
+      true,
+      finishReason === 'max_tokens' ? 'truncated' : 'empty'
+    );
+  }
   return {
     text,
     toolCalls,
@@ -522,6 +565,7 @@ function parseAnthropicResponse(json: unknown): AiChatResponse {
       inputTokens: numberOrZero(data.usage?.input_tokens),
       outputTokens: numberOrZero(data.usage?.output_tokens)
     },
+    finishReason,
     raw: json
   };
 }
@@ -619,10 +663,12 @@ function parseGeminiResponse(json: unknown): AiChatResponse {
           functionCall?: { name?: string; args?: unknown };
         }>;
       };
+      finishReason?: string | null;
     }>;
     usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   } | null;
-  const parts = data?.candidates?.[0]?.content?.parts;
+  const candidate = data?.candidates?.[0];
+  const parts = candidate?.content?.parts;
   if (!parts) throw new AiChatError('Gemini 返回为空', null, true);
   const text = parts
     .filter((part) => typeof part.text === 'string')
@@ -636,6 +682,17 @@ function parseGeminiResponse(json: unknown): AiChatResponse {
       name: part.functionCall?.name ?? '',
       args: parseArgs(part.functionCall?.args)
     }));
+  const finishReason = typeof candidate?.finishReason === 'string' ? candidate.finishReason : null;
+  if (!text && toolCalls.length === 0) {
+    throw new AiChatError(
+      finishReason === 'MAX_TOKENS'
+        ? '模型输出被 maxOutputTokens 截断，未返回正文。请提高该 Provider 的输出上限。'
+        : '模型返回空内容',
+      null,
+      true,
+      finishReason === 'MAX_TOKENS' ? 'truncated' : 'empty'
+    );
+  }
   return {
     text,
     toolCalls,
@@ -643,6 +700,7 @@ function parseGeminiResponse(json: unknown): AiChatResponse {
       inputTokens: numberOrZero(data?.usageMetadata?.promptTokenCount),
       outputTokens: numberOrZero(data?.usageMetadata?.candidatesTokenCount)
     },
+    finishReason,
     raw: json
   };
 }

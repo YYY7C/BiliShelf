@@ -3,6 +3,15 @@ import type { AiTaxonomy, AiTaxonomyCategory } from './types';
 export const DEFAULT_MAX_TAGS = 12;
 export const DEFAULT_MIN_CONFIDENCE = 0.5;
 
+/** 一次库级分析最多抽多少条视频（main / ipc / renderer 共用，避免各写一份） */
+export const MAX_ANALYSIS_SAMPLES = 1000;
+/** 分层采样时每个来源 / UP 主至少抽几条 */
+export const MIN_SAMPLES_PER_GROUP = 3;
+/** 视觉校验最多看多少条代表视频（含随机补充） */
+export const MAX_VISION_TARGETS = 16;
+/** 其中随机补充几条 */
+export const VISION_RANDOM_EXTRA = 2;
+
 export const DEFAULT_FOCUS = ['人物形象', '服饰', '动作', '场景', '风格', 'BGM', '情绪'];
 
 export const DEFAULT_TAXONOMY: AiTaxonomy = {

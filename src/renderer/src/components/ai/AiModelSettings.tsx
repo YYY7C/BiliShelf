@@ -114,6 +114,7 @@ function blankProvider(): AiProviderInput {
     capabilities: { vision: true, tools: true, jsonMode: true, audio: false },
     temperature: 0.2,
     maxTokens: 1200,
+    contextWindow: undefined,
     timeoutMs: 120_000,
     maxRetries: 2,
     imageDetail: 'auto',
@@ -133,6 +134,7 @@ function fromSummary(provider: AiProviderSummary): AiProviderInput {
     capabilities: { ...provider.capabilities },
     temperature: provider.temperature,
     maxTokens: provider.maxTokens,
+    contextWindow: provider.contextWindow,
     timeoutMs: provider.timeoutMs,
     maxRetries: provider.maxRetries,
     imageDetail: provider.imageDetail,
@@ -238,12 +240,14 @@ export function AiModelSettings() {
         model: info.id,
         capabilities,
         maxTokens,
+        contextWindow: info.contextWindow ?? current.contextWindow,
         pricing: info.pricing ?? current.pricing
       };
     });
     const state = (value: boolean | undefined) => (value === undefined ? '未提供' : value ? '是' : '否');
     setProbeMessage(
-      `已应用 ${info.name} 的能力：视觉 ${state(info.vision)}、工具 ${state(info.tools)}、JSON ${state(info.jsonMode)}`
+      `已应用 ${info.name} 的能力：视觉 ${state(info.vision)}、工具 ${state(info.tools)}、JSON ${state(info.jsonMode)}` +
+        (info.contextWindow ? `、上下文 ${Math.round(info.contextWindow / 1000)}k` : '')
     );
   };
 
@@ -590,11 +594,14 @@ export function AiModelSettings() {
                   ]}
                 />
               </Field>
-              <Field label="并发">
+              <Field
+                label="并发"
+                hint="同时处理的视频数；库级分析的视觉校验也用它。超过 4 可能触发网关限流。"
+              >
                 <TextInput
                   type="number"
                   min={1}
-                  max={4}
+                  max={10}
                   value={settings?.aiConcurrency ?? 2}
                   onChange={(event) => void updateSetting({ aiConcurrency: Number(event.target.value) || 1 })}
                 />

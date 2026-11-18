@@ -28,6 +28,7 @@ interface StoredProvider {
   capabilities: AiCapabilities;
   temperature: number;
   maxTokens: number;
+  contextWindow?: number;
   timeoutMs: number;
   maxRetries: number;
   imageDetail: AiImageDetail;
@@ -141,6 +142,9 @@ function sanitizeProvider(input: StoredProvider): StoredProvider {
     maxTokens: Number.isFinite(input.maxTokens)
       ? Math.min(32000, Math.max(128, Math.round(input.maxTokens)))
       : 1200,
+    contextWindow: Number.isFinite(input.contextWindow)
+      ? Math.min(10_000_000, Math.max(1024, Math.round(input.contextWindow!)))
+      : undefined,
     timeoutMs: Number.isFinite(input.timeoutMs)
       ? Math.min(600_000, Math.max(10_000, Math.round(input.timeoutMs)))
       : 120_000,
@@ -247,6 +251,7 @@ function summaryFor(provider: StoredProvider): AiProviderSummary {
     capabilities: provider.capabilities,
     temperature: provider.temperature,
     maxTokens: provider.maxTokens,
+    contextWindow: provider.contextWindow,
     timeoutMs: provider.timeoutMs,
     maxRetries: provider.maxRetries,
     imageDetail: provider.imageDetail,
@@ -322,6 +327,7 @@ export function saveProvider(input: AiProviderInput): AiProviderSummary[] {
     capabilities: sanitizeCapabilities(input.capabilities),
     temperature: input.temperature,
     maxTokens: input.maxTokens,
+    contextWindow: input.contextWindow,
     timeoutMs: input.timeoutMs,
     maxRetries: input.maxRetries,
     imageDetail: input.imageDetail,
