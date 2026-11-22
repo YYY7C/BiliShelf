@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
 ### Added
 
 - **播放器截图导出原图**：控制条相机按钮或 `S` 键，由主进程调用 ffmpeg 从本地源文件解帧，输出**原始分辨率** PNG（不缩放、不含弹幕与播放器 UI），保存到素材库 `screenshots/`；修复此前 `canvas.toDataURL` 因跨源画布被污染报 `Tainted canvases may not be exported` 的问题

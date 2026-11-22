@@ -827,7 +827,7 @@ export const demoApi: BilishelfApi = {
   app: {
     info: () =>
       delay({
-        version: '0.3.0-demo',
+        version: '0.4.0-demo',
         electron: '—',
         chrome: '—',
         node: '—',

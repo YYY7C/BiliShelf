@@ -143,7 +143,7 @@ export function Sidebar({
         </div>
         <div className="min-w-0">
           <div className="text-[13.5px] font-semibold leading-4 text-fg">BiliShelf</div>
-          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.3.0'}</div>
+          <div className="truncate text-[10.5px] leading-4 text-dim">本地素材库 · v{version ?? '0.4.0'}</div>
         </div>
       </div>
 
