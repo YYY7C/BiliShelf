@@ -20,7 +20,7 @@ import {
   recomputeRunReviewStatus,
   recoverInterruptedRuns,
   replaceRunTags,
-  reviewCounts,
+  requeueFailedRuns,
   updateBatch,
   updateRun
 } from '../../db/ai';
@@ -53,6 +53,16 @@ import {
 function now(): string {
   return new Date().toISOString();
 }
+
+/**
+ * 逐视频打标的输出上限：模型常给每个标签写一段 evidence，
+ * 2000 tokens 的输出很容易被截断成半句 JSON。截断时按阶梯放大重试。
+ */
+const TAG_TOKEN_CEILING = 16000;
+const TAG_TRUNCATION_RETRIES = 2;
+
+/** 自动重跑失败项前的等待时间，避免网关限流时立刻再撞一次 */
+const AUTO_RETRY_DELAY_MS = 5000;
 
 function wait(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -108,6 +118,7 @@ export class AiTaggingManager {
   private started = false;
   private stopping = false;
   private queueTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
 
   onQueue(listener: (snapshot: AiQueueSnapshot) => void): () => void {
     this.queueListeners.add(listener);
@@ -156,6 +167,10 @@ export class AiTaggingManager {
     if (this.queueTimer) {
       clearTimeout(this.queueTimer);
       this.queueTimer = null;
+    }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
   }
 
@@ -446,6 +461,7 @@ export class AiTaggingManager {
             maxTokens: providerRuntime.summary.maxTokens,
             jsonMode: providerRuntime.summary.capabilities.jsonMode,
             imageDetail: providerRuntime.summary.imageDetail,
+            reasoningEffort: providerRuntime.summary.reasoningEffort,
             timeoutMs: settings.aiTimeoutMs,
             signal
           },
@@ -525,6 +541,7 @@ export class AiTaggingManager {
             maxTokens: providerRuntime.summary.maxTokens,
             jsonMode: providerRuntime.summary.capabilities.jsonMode,
             imageDetail: providerRuntime.summary.imageDetail,
+            reasoningEffort: providerRuntime.summary.reasoningEffort,
             timeoutMs: settings.aiTimeoutMs,
             signal
           },
@@ -600,14 +617,28 @@ export class AiTaggingManager {
     onRequest?: () => void
   ): Promise<AiChatResponse> {
     let lastError: unknown = null;
-    for (let attempt = 0; attempt <= retries; attempt += 1) {
+    let budget = request.maxTokens;
+    let truncations = 0;
+    let attempt = 0;
+    while (attempt <= retries) {
       try {
         onRequest?.();
-        return await adapter.chat(request);
+        const response = await adapter.chat({ ...request, maxTokens: budget });
+        // finish_reason=length：正文被切在半句，JSON 必然不完整，放大预算重来
+        if (response.finishReason === 'length' && response.toolCalls.length === 0) {
+          if (truncations < TAG_TRUNCATION_RETRIES && budget < TAG_TOKEN_CEILING) {
+            truncations += 1;
+            budget = Math.min(TAG_TOKEN_CEILING, budget * 2);
+            log.warn('[ai] 输出被截断，放大 max_tokens 重试', request.maxTokens, '→', budget);
+            continue;
+          }
+        }
+        return response;
       } catch (error) {
         lastError = error;
         const retryable = error instanceof AiChatError ? error.retryable : false;
         if (!retryable || attempt >= retries || signal.aborted) break;
+        attempt += 1;
         await wait(800 * 2 ** attempt, signal);
       }
     }
@@ -635,8 +666,27 @@ export class AiTaggingManager {
       updateBatch(batchId, { status: 'running' });
       return;
     }
+    // 还有失败项时先按设置自动重跑，重试用完才收尾
+    const autoRetry = Math.min(5, Math.max(0, getSettings().aiAutoRetry));
+    const requeued = row.failed > 0 ? requeueFailedRuns(batchId, autoRetry) : 0;
+    if (requeued > 0) {
+      updateBatch(batchId, { status: 'running', finishedAt: null });
+      log.info('[ai] 自动重跑失败项', batchId, requeued);
+      this.scheduleAutoRetry();
+      return;
+    }
     const status = row.canceled === row.total ? 'canceled' : 'done';
     updateBatch(batchId, { status, finishedAt: now() });
+  }
+
+  /** 自动重跑前留一点间隔，避免网关限流时立刻再撞一次 */
+  private scheduleAutoRetry(): void {
+    if (this.retryTimer || this.stopping) return;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.emitQueue();
+      this.pump();
+    }, AUTO_RETRY_DELAY_MS);
   }
 
   private emitQueue(): void {
@@ -691,16 +741,3 @@ export class AiTaggingManager {
 }
 
 export const aiTaggingManager = new AiTaggingManager();
-
-/** 供 IPC 使用：当前默认 Provider 下，某个方案需要用户确认的上传 host。 */
-export function consentHostsForProfile(profile: AiTagProfile): string[] {
-  return aiTaggingManager.consentHosts(getDefaultProvider()?.id ?? null, profile);
-}
-
-export function aiQueueSnapshot(): AiQueueSnapshot {
-  return aiTaggingManager.snapshot();
-}
-
-export function aiPendingReviewCount(): number {
-  return reviewCounts().pending;
-}

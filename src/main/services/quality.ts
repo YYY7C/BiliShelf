@@ -4,6 +4,7 @@ import { all, one, run } from '../db/index';
 import { findActiveJob } from '../db/jobs';
 import { getVideoRow, videoKeyFor } from '../db/videos';
 import { probeFormats } from '../engine/ytdlp';
+import { getSettings } from '../store';
 import { deleteCookiesFile, exportCookiesFile } from './auth';
 import { downloadManager } from './downloads';
 
@@ -87,7 +88,7 @@ async function runQualityScan(options: {
       options.onProgress?.({ scanned, total: rows.length, title: row.title });
 
       try {
-        const formats = await probeFormats(buildUrl(row.bvid, row.page), cookiesFile);
+        const formats = await probeFormats(buildUrl(row.bvid, row.page), cookiesFile, getSettings().downloadProxy);
         const maxHeight = formats.reduce((max, format) => Math.max(max, shortSide(format.width, format.height)), 0);
         if (maxHeight <= 0) {
           run('UPDATE videos SET quality_checked_at = ? WHERE id = ?', [new Date().toISOString(), row.id]);

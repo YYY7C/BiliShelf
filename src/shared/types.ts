@@ -7,13 +7,10 @@ export type SourceKind = 'favorite' | 'watch_later' | 'space' | 'collection' | '
 
 export type VideoStatus = 'present' | 'missing' | 'unavailable' | 'trashed' | 'importing';
 
-export type RemoteState = 'available' | 'unavailable' | 'unknown';
+export type RemoteState = 'available' | 'unavailable' | 'paid' | 'unknown' | 'rescued';
 
 export type JobStatus =
   'queued' | 'resolving' | 'downloading' | 'postprocessing' | 'done' | 'failed' | 'paused' | 'canceled';
-
-export type AssetType =
-  'video' | 'cover' | 'thumb' | 'preview' | 'subtitle' | 'danmaku' | 'nfo' | 'audio' | 'image';
 
 export type SortKey = 'added' | 'recent' | 'title' | 'duration' | 'size' | 'rating';
 
@@ -68,6 +65,26 @@ export interface VideoItem {
   aiLastRunAt: string | null;
 }
 
+export interface ScreenshotInput {
+  videoId: number;
+  /** 视频内时间（秒） */
+  time: number;
+}
+
+export interface ScreenshotResult {
+  /** 绝对路径 */
+  path: string;
+  /** 文件名 */
+  name: string;
+  /** 相对素材库根目录的路径，例如 screenshots/xxx.png */
+  relativePath: string;
+  width: number;
+  height: number;
+  bytes: number;
+  /** 实际使用的时间点（秒） */
+  time: number;
+}
+
 export interface LibraryQuery {
   search?: string;
   tag?: string;
@@ -108,14 +125,50 @@ export interface SourceSummary {
   itemCount: number;
   downloadedCount: number;
   unavailableCount: number;
+  /** 充电专属 / 付费稿件数量：不会进下载队列 */
+  paidCount: number;
+  /** 上一次同步新增的条数（来自 sync_runs，用于展示「新增 N」） */
+  lastAdded: number;
+  /** 合集类来源的具体形态；UP 主投稿与收藏夹为 null */
+  collectionType: 'season' | 'series' | 'medialist' | null;
   lastSyncedAt: string | null;
   syncEnabled: boolean;
+  /** 同步后自动把「本次新增」的条目加入下载队列 */
+  autoDownload: boolean;
+  /** UP 主投稿的时长过滤下限（秒），null = 不限；其它来源类型恒为 null */
+  minDuration: number | null;
+  /** UP 主投稿的时长过滤上限（秒），null = 不限 */
+  maxDuration: number | null;
   note: string | null;
 }
 
 export interface SourcePatch {
   syncEnabled?: boolean;
+  autoDownload?: boolean;
+  minDuration?: number | null;
+  maxDuration?: number | null;
   note?: string | null;
+}
+
+/** 添加来源前的识别结果（不落库）。 */
+export interface SourcePreview {
+  /** 规范化的 remote_id，用于判断是否已经订阅过 */
+  target: string;
+  kind: SourceKind;
+  title: string;
+  cover: string | null;
+  ownerMid: number | null;
+  ownerName: string | null;
+  /** 清单总条数，读取失败时为 null */
+  itemCount: number | null;
+  /** 前几条稿件的标题，用于确认链接是否正确 */
+  samples: string[];
+  /** 非致命问题（例如未登录导致清单不可读） */
+  warning: string | null;
+  /** 在 B 站打开的规范地址 */
+  url: string | null;
+  /** 例如「UP 投稿 · UID 123」「合集 · SID 456」 */
+  description: string;
 }
 
 export interface RemoteItem {
@@ -134,6 +187,8 @@ export interface RemoteItem {
   state: RemoteState;
   tags: string[];
   downloadedVideoId: number | null;
+  /** 这条视频是从别的来源下载的（本来源内并未下载过），用于提示不会重复下载 */
+  downloadedElsewhere: boolean;
   jobStatus: JobStatus | null;
   /** 已下载文件的格式信息，未下载时为 null */
   width: number | null;
@@ -155,6 +210,99 @@ export interface RemoteItemsQuery {
 export interface RemoteItemsResult {
   items: RemoteItem[];
   total: number;
+}
+
+/* ------------------------------ 失效补档 ------------------------------ */
+
+/** 失效条目的复核结论 */
+export type RescueVerdict = 'local' | 'alive' | 'reviewing' | 'paid' | 'private' | 'dead' | 'unknown';
+
+export interface RescueCandidateView {
+  identifier: string;
+  title: string | null;
+  duration: number | null;
+  uploader: string | null;
+  size: number | null;
+  score: number;
+  tier: 'sure' | 'likely' | 'doubt' | 'reject';
+  reasons: string[];
+}
+
+export interface RescuePlanRow {  remoteItemId: number;
+  sourceId: number;
+  sourceTitle: string;
+  bvid: string;
+  page: number;
+  /** 库里的标题，可能是「已失效视频」占位文本 */
+  title: string;
+  duration: number | null;
+  upName: string | null;
+  localVideoId: number | null;
+  verdict: RescueVerdict;
+  probeCode: number | null;
+  probeMessage: string | null;
+  /** pagelist 的返回码：0 = 稿件记录还在，-404 = 彻底没了 */
+  pageListCode: number | null;
+  /** 实际发出的 IA 检索次数 */
+  iaQueries: number;
+  /** 检索命中的条目数（去重后） */
+  iaHits: number;
+  candidates: RescueCandidateView[];
+  best: RescueCandidateView | null;
+  /** IA 上命中但属于充电/付费内容，已按规则跳过 */
+  paidSkipped: number;
+  note: string | null;
+  elapsedMs: number;
+  error: string | null;
+}
+
+export interface RescuePlanSummary {
+  requested: number;
+  local: number;
+  alive: number;
+  reviewing: number;
+  paid: number;
+  dead: number;
+  private: number;
+  unknown: number;
+  withCandidate: number;
+  sure: number;
+  likely: number;
+  doubt: number;
+  /** IA 命中但因原稿件是充电/付费而跳过的条目数 */
+  paidSkipped: number;
+  /** 去重后的 bvid 数（同一稿件可能在多个来源里出现） */
+  uniqueBvid: number;
+  elapsedMs: number;
+}
+
+export interface RescuePlan {
+  rows: RescuePlanRow[];
+  summary: RescuePlanSummary;
+}
+
+/** 直接对某个 BV 检索存档的结果（不依赖清单条目） */
+export interface RescueSearchResult {
+  queries: number;
+  hits: number;
+  paidSkipped: number;
+  candidates: RescueCandidateView[];
+}
+
+/** 应用内「失效清单」的一行 */
+export interface RescueListItem {
+  id: number;
+  sourceId: number;
+  sourceTitle: string;
+  bvid: string;
+  page: number;
+  title: string;
+  upName: string | null;
+  duration: number | null;
+  state: RemoteState;
+  lastSeenAt: string | null;
+  /** 本地已有副本时的 video id（这种会被自动标成 rescued） */
+  localVideoId: number | null;
 }
 
 export interface DownloadJob {
@@ -313,6 +461,10 @@ export interface AppSettings {
   closeToTray: boolean;
   ytdlpPath: string;
   ffmpegPath: string;
+  /** yt-dlp 下载时使用的网络出口：system=跟随系统代理，direct=强制直连 */
+  downloadProxy: 'system' | 'direct';
+  /** 下载失败（网络类）后自动重试的次数 */
+  downloadAutoRetry: number;
   requestDelayMs: number;
   /** AI 打标每视频抽帧数（不含封面） */
   aiFrameCount: number;
@@ -328,6 +480,8 @@ export interface AppSettings {
   aiTimeoutMs: number;
   /** AI 请求最大重试次数 */
   aiMaxRetries: number;
+  /** 运行失败后自动重跑的次数（0 = 关闭） */
+  aiAutoRetry: number;
   /** 单次打标最多工具轮次 */
   aiMaxToolRounds: number;
   /** AI 抽帧/音频缓存保留天数 */
@@ -405,11 +559,14 @@ export type AiProtocol = 'openai' | 'anthropic' | 'gemini' | 'custom';
 export type AiCustomCompatMode = 'openai' | 'anthropic' | 'gemini' | 'template';
 export type AiTagSource = 'vision' | 'acrcloud' | 'bilibili_tag' | 'inferred';
 export type AiRunStatus = 'queued' | 'running' | 'done' | 'failed' | 'canceled';
-export type AiReviewStatus = 'pending' | 'partial' | 'approved' | 'rejected';
+/** superseded：标签已被后续运行取代（或这次没有产出），没有可审核的内容 */
+export type AiReviewStatus = 'pending' | 'partial' | 'approved' | 'rejected' | 'superseded';
 export type AiTagStatus = 'pending' | 'approved' | 'rejected' | 'superseded';
 export type AiBatchStatus = 'queued' | 'running' | 'paused' | 'done' | 'canceled';
 export type AiStage = 'frames' | 'request' | 'tools' | 'parse' | 'done';
 export type AiImageDetail = 'low' | 'auto' | 'high';
+/** 思考强度；default 表示不给网关传参，跟随模型默认行为 */
+export type AiReasoningEffort = 'default' | 'low' | 'medium' | 'high' | 'max';
 
 export interface AiCapabilities {
   vision: boolean;
@@ -444,6 +601,8 @@ export interface AiProviderSummary {
   maxTokens: number;
   /** 模型上下文窗口（探测 /models 时回填），用于库级分析的自适应分批 */
   contextWindow?: number;
+  /** 思考强度：推理模型把更多预算花在 reasoning 上；default 表示不指定 */
+  reasoningEffort?: AiReasoningEffort;
   timeoutMs: number;
   maxRetries: number;
   imageDetail: AiImageDetail;
@@ -465,6 +624,7 @@ export interface AiProviderInput {
   temperature: number;
   maxTokens: number;
   contextWindow?: number;
+  reasoningEffort?: AiReasoningEffort;
   timeoutMs: number;
   maxRetries: number;
   imageDetail: AiImageDetail;
@@ -554,6 +714,8 @@ export interface AiTagProfile {
   language: string;
   useAcrcloud: boolean;
   useBilibiliTags: boolean;
+  /** 是否允许模型输出分类体系之外的标签；默认 false（只用方案内标签） */
+  allowExtraTags: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -574,6 +736,7 @@ export interface AiTagProfileInput {
   language: string;
   useAcrcloud: boolean;
   useBilibiliTags: boolean;
+  allowExtraTags?: boolean;
 }
 
 export interface AiFrame {
@@ -711,8 +874,35 @@ export interface AiReviewQuery {
   videoId?: number;
   search?: string;
   minConfidence?: number;
+  /** 只看存在互斥/矛盾标签的条目 */
+  conflicts?: 'any';
   limit?: number;
   offset?: number;
+}
+
+/** 标签质量审计结果 */
+export interface AiReviewAudit {
+  /** 与当前筛选一致、且有 pending 标签的条目数 */
+  runs: number;
+  pendingTags: number;
+  /** 每条问题的命中条目数 */
+  issues: Record<string, number>;
+  /** 一条问题都没有的条目数（可直接批量通过） */
+  cleanRuns: number;
+}
+
+export interface AiBulkReviewInput {
+  action: 'approve' | 'reject';
+  /** true = 只处理没有硬冲突的条目 */
+  onlyClean?: boolean;
+  query?: AiReviewQuery;
+}
+
+export interface AiBulkReviewResult {
+  runs: number;
+  tags: number;
+  /** 因为存在冲突被跳过的条目数 */
+  skipped: number;
 }
 
 export interface AiReviewDecision {

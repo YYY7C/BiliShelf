@@ -40,14 +40,16 @@ export const AI_REVIEW_STATUS_LABEL: Record<AiReviewStatus, string> = {
   pending: '待审核',
   partial: '部分通过',
   approved: '已通过',
-  rejected: '已拒绝'
+  rejected: '已拒绝',
+  superseded: '已取代'
 };
 
 export const AI_REVIEW_STATUS_CLASS: Record<AiReviewStatus, string> = {
   pending: 'border-yellow/30 bg-yellow/10 text-yellow',
   partial: 'border-blue/30 bg-blue/10 text-blue',
   approved: 'border-green/30 bg-green/10 text-green',
-  rejected: 'border-red/30 bg-red/10 text-red'
+  rejected: 'border-red/30 bg-red/10 text-red',
+  superseded: 'border-line2 bg-panel2/60 text-dim'
 };
 
 const CATEGORY_CLASSES = [
@@ -85,15 +87,3 @@ export function formatTokens(value: number): string {
   return String(Math.round(value));
 }
 
-export function estimateCost(
-  pricing: { inputPerMillion: number; outputPerMillion: number; currency: string } | null,
-  inputTokens: number,
-  outputTokens: number
-): string | null {
-  if (!pricing) return null;
-  const cost =
-    (inputTokens / 1_000_000) * pricing.inputPerMillion +
-    (outputTokens / 1_000_000) * pricing.outputPerMillion;
-  if (!Number.isFinite(cost) || cost <= 0) return null;
-  return `${pricing.currency || 'CNY'} ${cost.toFixed(3)}`;
-}

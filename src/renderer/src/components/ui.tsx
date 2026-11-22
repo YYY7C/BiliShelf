@@ -108,11 +108,13 @@ export function Chip({
 export function Tag({
   children,
   tone = 'default',
-  className
+  className,
+  title
 }: {
   children: ReactNode;
   tone?: 'default' | 'pink' | 'blue' | 'green' | 'yellow' | 'red' | 'purple';
   className?: string;
+  title?: string;
 }) {
   const tones: Record<string, string> = {
     default: 'bg-panel3/70 text-muted border-line/60',
@@ -125,6 +127,7 @@ export function Tag({
   };
   return (
     <span
+      title={title}
       className={cn(
         'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] leading-4',
         tones[tone],
@@ -183,29 +186,40 @@ export function TextArea({ className, ...rest }: TextareaHTMLAttributes<HTMLText
   );
 }
 
+/**
+ * 外层必须是 div 而不是 label：`Field` 本身已经是 `<label>`，label 套 label 时点击会被
+ * 内外两层各自转发一次，原生下拉框会「打开又立刻关闭」（表现为点了没反应）。
+ * select 自己吃满整个盒子宽度，否则右侧留白和箭头都在 label 上，点上去没有响应。
+ */
 export function Select({
   value,
   onChange,
   options,
   icon,
-  title
+  title,
+  className
 }: {
   value: string;
   onChange: (value: string) => void;
   options: Array<{ value: string; label: string }>;
   icon?: ReactNode;
   title?: string;
+  className?: string;
 }) {
   return (
-    <label
+    <div
       title={title}
-      className="relative inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-panel2 pl-2 pr-1 text-[12px] text-muted"
+      className={cn(
+        'relative inline-flex h-8 items-center gap-1.5 rounded-lg border border-line bg-panel2 pl-2 text-[12px] text-muted',
+        'focus-within:border-blue/50',
+        className
+      )}
     >
-      {icon}
+      {icon ? <span className="pointer-events-none flex-none">{icon}</span> : null}
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-full cursor-pointer appearance-none bg-transparent pr-4 text-[12px] text-fg focus:outline-none"
+        className="h-full w-full min-w-0 cursor-pointer appearance-none bg-transparent pr-6 text-[12px] text-fg focus:outline-none"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value} className="bg-panel text-fg">
@@ -214,7 +228,7 @@ export function Select({
         ))}
       </select>
       <ChevronDown size={12} className="pointer-events-none absolute right-1.5 text-dim" />
-    </label>
+    </div>
   );
 }
 

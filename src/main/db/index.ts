@@ -72,10 +72,6 @@ export function closeDatabase(): void {
   statements.clear();
 }
 
-export function currentLibraryRoot(): string {
-  return activeRoot || libraryPaths().root;
-}
-
 function migrate(instance: DB): void {
   instance.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     id INTEGER PRIMARY KEY,

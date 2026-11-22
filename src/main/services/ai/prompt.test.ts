@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import type { AiTagProfile } from '@shared/types';
-import { buildBgmHint, renderPrompt } from './prompt';
+import { buildBgmHint, renderPrompt, setMusicKeywords } from './prompt';
+
+// 真实关键词存在素材库的 ai-quality.json（不进仓库），测试用合成词
+beforeEach(() => setMusicKeywords(['演示关键词', '演示曲']));
 
 const profile: AiTagProfile = {
   id: 7,
-  name: '舞蹈人物',
+  name: '示例方案',
   description: '',
   scope: 'global',
   sourceId: null,
@@ -14,7 +17,7 @@ const profile: AiTagProfile = {
   taxonomy: {
     categories: [
       { name: '人物', description: '人物形象', examples: ['长发'] },
-      { name: '服饰', description: '服装', examples: ['JK制服'] },
+      { name: '服饰', description: '服装', examples: ['标签甲'] },
       { name: 'BGM', description: '音乐', examples: [] }
     ],
     stopwords: ['视频'],
@@ -28,6 +31,7 @@ const profile: AiTagProfile = {
   language: 'zh-CN',
   useAcrcloud: true,
   useBilibiliTags: true,
+  allowExtraTags: false,
   createdAt: '',
   updatedAt: ''
 };
@@ -35,12 +39,12 @@ const profile: AiTagProfile = {
 describe('AI prompt rendering', () => {
   it('detects music clues from title and tags', () => {
     const hint = buildBgmHint({
-      title: '《演示曲名》翻跳',
+      title: '《演示曲名》演示关键词',
       upName: null,
-      description: '一段舞蹈',
+      description: '一段演示',
       duration: 90,
       sourceName: null,
-      tags: ['宅舞']
+      tags: ['演示关键词']
     });
     expect(hint).toContain('建议调用 identify_music');
     expect(hint).toContain('演示曲名');
@@ -55,7 +59,7 @@ describe('AI prompt rendering', () => {
         description: '简介',
         duration: 125,
         sourceName: '收藏夹',
-        tags: ['舞蹈']
+        tags: ['示例标签']
       },
       [
         { index: -1, time: 0, path: 'a.jpg' },

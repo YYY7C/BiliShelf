@@ -231,6 +231,17 @@ export function resumePausedJobs(): number {
   return result.changes;
 }
 
+/** 批量重试所有失败任务（例如一批画质升级被同一个 CDN 问题打挂后，改完设置一键重来）。 */
+export function requeueFailedJobs(): number {
+  const result = run(
+    `UPDATE download_jobs
+     SET status = 'queued', attempts = 0, progress = 0, speed = NULL, eta = NULL,
+         error_code = NULL, error_message = NULL, started_at = NULL, finished_at = NULL
+     WHERE status = 'failed'`
+  );
+  return result.changes;
+}
+
 export function clearFinishedJobs(): number {
   const result = run("DELETE FROM download_jobs WHERE status IN ('done','canceled','failed')");
   return result.changes;
@@ -263,10 +274,6 @@ export function activeJobCount(): number {
       "SELECT COUNT(*) AS c FROM download_jobs WHERE status IN ('resolving','downloading','postprocessing')"
     )?.c ?? 0
   );
-}
-
-export function jobQueuedCount(): number {
-  return one<{ c: number }>("SELECT COUNT(*) AS c FROM download_jobs WHERE status = 'queued'")?.c ?? 0;
 }
 
 export function jobStatusCounts(): JobStatusCounts {

@@ -254,7 +254,7 @@ export function AiAnalysisView() {
               </div>
               <Field
                 label="额外要求（可选）"
-                hint="例如：这是舞蹈收藏夹，重点关注人物形象、服饰、舞蹈风格和 BGM。"
+                hint="例如：这是某个主题的收藏夹，重点关注人物、服饰、场景和 BGM。"
               >
                 <TextInput
                   value={instructions}

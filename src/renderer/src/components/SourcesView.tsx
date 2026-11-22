@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Crown,
   Download,
   ExternalLink,
   HardDrive,
@@ -20,7 +21,15 @@ import {
   Trash2
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { QualityPreset, RemoteItem, SourcePatch, SourceSummary, SyncProgress } from '@shared/types';
+import type {
+  QualityPreset,
+  RemoteItem,
+  SourcePatch,
+  SourcePreview,
+  SourceSummary,
+  SyncProgress
+} from '@shared/types';
+import { describeRange, isRangeEmpty, normalizeRange } from '@shared/durationRange';
 import {
   codecLabel,
   formatBytes,
@@ -35,6 +44,7 @@ import {
 import { api } from '../lib/bridge';
 import { useUi } from '../lib/store';
 import { Button, Chip, IconButton, Modal, Select, Tag, TextInput } from './ui';
+import { RescueListModal } from './RescueListModal';
 
 interface SourcesViewProps {
   sources: SourceSummary[];
@@ -54,6 +64,16 @@ const KIND_LABEL: Record<string, string> = {
   collection: '合集',
   manual: '手动'
 };
+
+/** 合集类来源显示更具体的形态，避免「系列」「视频列表」都被叫成合集。 */
+function kindLabel(source: SourceSummary): string {
+  if (source.kind === 'collection') {
+    if (source.collectionType === 'series') return '系列';
+    if (source.collectionType === 'medialist') return '视频列表';
+    return '合集';
+  }
+  return KIND_LABEL[source.kind] ?? source.kind;
+}
 
 const QUALITY_OPTIONS: Array<{ value: QualityPreset; label: string }> = [
   { value: 'best', label: '最高画质（4K+）' },
@@ -84,9 +104,17 @@ function sourceLink(source: SourceSummary): string | null {
       : `https://www.bilibili.com/medialist/detail/ml${encodeURIComponent(source.remoteId)}`;
   }
   if (source.kind === 'watch_later') return 'https://www.bilibili.com/watchlater/';
-  if (source.kind === 'space' || source.kind === 'collection') {
-    return /^https?:\/\//i.test(source.remoteId) ? source.remoteId : null;
-  }
+  const id = source.remoteId;
+  // 旧数据把整条 URL 存进了 remote_id
+  if (/^https?:\/\//i.test(id)) return id;
+  const space = id.match(/^mid:(\d+)$/);
+  if (space) return `https://space.bilibili.com/${space[1]}/video`;
+  const season = id.match(/^season:(\d+):(\d+)$/);
+  if (season) return `https://space.bilibili.com/${season[1]}/channel/collectiondetail?sid=${season[2]}`;
+  const series = id.match(/^series:(\d+):(\d+)$/);
+  if (series) return `https://space.bilibili.com/${series[1]}/channel/seriesdetail?sid=${series[2]}`;
+  const media = id.match(/^medialist:(\d+)$/);
+  if (media) return `https://www.bilibili.com/medialist/detail/ml${media[1]}`;
   return null;
 }
 
@@ -95,9 +123,18 @@ function sourceSubtitle(source: SourceSummary): string {
     return `收藏夹 ID ${source.remoteId}${source.ownerMid ? ` · UP ${source.ownerMid}` : ''}`;
   }
   if (source.kind === 'watch_later') return '当前账号的稍后再看';
-  if (source.kind === 'space') return `UP 主${source.ownerMid ? ` · UID ${source.ownerMid}` : ''}`;
-  if (source.kind === 'collection') return `合集 · ${source.remoteId}`;
-  return source.remoteId;
+  const id = source.remoteId;
+  if (/^https?:\/\//i.test(id)) return id;
+  const owner = source.ownerMid ? ` · UP ${source.ownerMid}` : '';
+  const space = id.match(/^mid:(\d+)$/);
+  if (space) return `UP 投稿 · UID ${space[1]}`;
+  const season = id.match(/^season:(\d+):(\d+)$/);
+  if (season) return `合集 · SID ${season[2]}${owner}`;
+  const series = id.match(/^series:(\d+):(\d+)$/);
+  if (series) return `系列 · SID ${series[2]}${owner}`;
+  const media = id.match(/^medialist:(\d+)$/);
+  if (media) return `视频列表 · ML ${media[1]}`;
+  return id;
 }
 
 function MiniSwitch({
@@ -134,14 +171,28 @@ function MiniSwitch({
   );
 }
 
-function CountStat({ label, value, tone }: { label: string; value: number; tone?: 'green' | 'red' }) {
+function CountStat({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: number;
+  tone?: 'green' | 'red' | 'yellow';
+}) {
   return (
     <div className="min-w-0">
       <div
         title={formatExact(value)}
         className={clsx(
           'truncate font-mono text-[12px]',
-          tone === 'green' ? 'text-green' : tone === 'red' ? 'text-red' : 'text-fg'
+          tone === 'green'
+            ? 'text-green'
+            : tone === 'red'
+              ? 'text-red'
+              : tone === 'yellow'
+                ? 'text-yellow'
+                : 'text-fg'
         )}
       >
         {formatCount(value)}
@@ -189,8 +240,14 @@ export function SourcesView({
   const [selected, setSelected] = useState<number[]>([]);
   const [quality, setQuality] = useState<QualityPreset>(defaultQuality);
   const [addOpen, setAddOpen] = useState(false);
-  const [addKind, setAddKind] = useState<'space' | 'collection'>('space');
   const [addUrl, setAddUrl] = useState('');
+  const [rangeMin, setRangeMin] = useState('');
+  const [rangeMax, setRangeMax] = useState('');
+  const [preview, setPreview] = useState<SourcePreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [rangeDraft, setRangeDraft] = useState<{ min: string; max: string } | null>(null);
+  const [rescueOpen, setRescueOpen] = useState(false);
   const [sourceLayout, setSourceLayout] = useState<ViewLayout>(() =>
     localStorage.getItem('bilishelf-sources-layout') === 'list' ? 'list' : 'grid'
   );
@@ -231,13 +288,18 @@ export function SourcesView({
   const filtered = Boolean(search.trim() || onlyUndownloaded || onlyUnavailable);
 
   const eligibleOf = (source: SourceSummary) =>
-    Math.max(0, source.itemCount - source.downloadedCount - source.unavailableCount);
+    Math.max(0, source.itemCount - source.downloadedCount - source.unavailableCount - source.paidCount);
 
   const favoriteEligible = useMemo(
     () =>
       sources
         .filter((source) => source.kind === 'favorite')
-        .reduce((sum, source) => sum + Math.max(0, source.itemCount - source.downloadedCount - source.unavailableCount), 0),
+        .reduce(
+          (sum, source) =>
+            sum +
+            Math.max(0, source.itemCount - source.downloadedCount - source.unavailableCount - source.paidCount),
+          0
+        ),
     [sources]
   );
 
@@ -330,6 +392,14 @@ export function SourcesView({
     );
   };
 
+  const toggleAutoDownload = (source: SourceSummary) => {
+    void patchSource(
+      source.id,
+      { autoDownload: !source.autoDownload },
+      source.autoDownload ? '已关闭：同步后不再自动下载新条目' : '已开启：同步后自动下载本次新增的条目'
+    );
+  };
+
   const saveNote = async () => {
     if (noteDraft === null) return;
     const draft = noteDraft;
@@ -364,14 +434,83 @@ export function SourcesView({
     }
   };
 
-  const addUrlSource = async () => {
+  /** 输入框里的秒数：留空 = 不限；非法输入直接拒绝，避免把 NaN 传给主进程。 */
+  const parseRangeInput = (): { minDuration: number | null; maxDuration: number | null } => {
+    const read = (raw: string, label: string): number | null => {
+      const text = raw.trim();
+      if (!text) return null;
+      const value = Number(text);
+      if (!Number.isFinite(value) || value < 0) throw new Error(`${label}必须是不小于 0 的秒数`);
+      return Math.round(value);
+    };
+    const range = normalizeRange(read(rangeMin, '最小时长'), read(rangeMax, '最大时长'));
+    return { minDuration: range.min, maxDuration: range.max };
+  };
+
+  const previewAddSource = async () => {
+    if (!addUrl.trim()) {
+      pushToast('error', '请输入 UP 主 UID 或链接');
+      return;
+    }
+    setPreviewing(true);
+    setPreview(null);
     try {
-      if (!addUrl.trim()) throw new Error('请输入链接');
-      await api.sources.add({ kind: addKind, url: addUrl.trim() });
-      pushToast('success', '已添加来源');
+      const range = parseRangeInput();
+      const result = await api.sources.preview({ url: addUrl.trim(), ...range });
+      setPreview(result);
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    } finally {
+      setPreviewing(false);
+    }
+  };
+
+  const addUrlSource = async () => {
+    setAdding(true);
+    try {
+      if (!addUrl.trim()) throw new Error('请输入 UP 主 UID 或链接');
+      const range = parseRangeInput();
+      const next = await api.sources.add({ kind: 'auto', url: addUrl.trim(), ...range });
+      const created = preview ? next.find((source) => source.remoteId === preview.target) : undefined;
+      const normalized = normalizeRange(range.minDuration, range.maxDuration);
+      const rangeLabel = isRangeEmpty(normalized) ? '' : `（时长 ${describeRange(normalized)}）`;
+      pushToast(
+        'success',
+        `${preview ? `已订阅「${preview.title}」` : '已添加来源'}${rangeLabel}${created ? '，点「同步」拉取清单' : ''}`
+      );
       setAddOpen(false);
       setAddUrl('');
+      setRangeMin('');
+      setRangeMax('');
+      setPreview(null);
       onChanged();
+      // 直接打开新来源，省去用户在列表里找一遍
+      if (created) onSelectSource(created.id);
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const saveRange = async () => {
+    if (!activeSource) return;
+    try {
+      const draft = rangeDraft ?? { min: '', max: '' };
+      const min = draft.min.trim() ? Number(draft.min) : null;
+      const max = draft.max.trim() ? Number(draft.max) : null;
+      if ((min !== null && (!Number.isFinite(min) || min < 0)) || (max !== null && (!Number.isFinite(max) || max < 0))) {
+        throw new Error('时长必须是不小于 0 的秒数');
+      }
+      const range = normalizeRange(min, max);
+      setRangeDraft(null);
+      await patchSource(
+        activeSource.id,
+        { minDuration: range.min, maxDuration: range.max },
+        isRangeEmpty(range)
+          ? '已取消时长限制，重新同步后显示全部条目'
+          : `已设为 ${describeRange(range)}，重新同步后按区间过滤`
+      );
     } catch (error) {
       pushToast('error', (error as Error).message);
     }
@@ -383,7 +522,11 @@ export function SourcesView({
     setSyncProgress(null);
     try {
       const result = await api.sources.sync(activeSource.id);
-      pushToast('success', `同步完成：新增 ${result.added}，更新 ${result.updated}，失效 ${result.unavailable}`);
+      const filteredNote = result.filtered > 0 ? `，按时长过滤 ${result.filtered}` : '';
+      pushToast(
+        'success',
+        `同步完成：新增 ${result.added}，更新 ${result.updated}，失效 ${result.unavailable}${filteredNote}`
+      );
       await load('reset');
       onChanged();
     } catch (error) {
@@ -399,9 +542,10 @@ export function SourcesView({
     setSyncProgress(null);
     try {
       const result = await api.sources.syncAll();
+      const filteredNote = result.filtered > 0 ? `，按时长过滤 ${result.filtered}` : '';
       pushToast(
         result.failed > 0 ? 'warn' : 'success',
-        `全部同步完成：新增 ${result.added}，更新 ${result.updated}${result.failed > 0 ? `，${result.failed} 个来源失败` : ''}`
+        `全部同步完成：新增 ${result.added}，更新 ${result.updated}${filteredNote}${result.failed > 0 ? `，${result.failed} 个来源失败` : ''}`
       );
       await load('reset');
       onChanged();
@@ -478,6 +622,15 @@ export function SourcesView({
         </div>
       </div>
     </Modal>
+  ) : null;
+
+  const rescueModal = rescueOpen ? (
+    <RescueListModal
+      onClose={() => setRescueOpen(false)}
+      onOpenSource={(sourceId) => {
+        onSelectSource(sourceId);
+      }}
+    />
   ) : null;
 
   const downloadAllModal = downloadAll ? (
@@ -621,6 +774,15 @@ export function SourcesView({
             <Download size={12} />
             下载全部收藏夹
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setRescueOpen(true)}
+            title="跨来源查看所有失效条目，并修复本地已有副本的条目"
+          >
+            <AlertTriangle size={12} />
+            失效清单
+          </Button>
           {!loggedIn ? (
             <Button variant="ghost" size="sm" className="text-blue" onClick={onLogin}>
               <LogIn size={12} />
@@ -648,25 +810,96 @@ export function SourcesView({
         {syncProgressBar}
 
         {addOpen ? (
-          <div className="flex flex-none flex-wrap items-center gap-2 border-b border-line2 bg-panel2/40 px-4 py-2">
-            <Select
-              value={addKind}
-              onChange={(value) => setAddKind(value as 'space' | 'collection')}
-              options={[
-                { value: 'space', label: 'UP 主空间' },
-                { value: 'collection', label: '合集 / 系列' }
-              ]}
-            />
-            <TextInput
-              value={addUrl}
-              onChange={(event) => setAddUrl(event.target.value)}
-              placeholder="https://space.bilibili.com/12345/video"
-              className="max-w-lg flex-1"
-            />
-            <Button variant="primary" size="sm" onClick={() => void addUrlSource()}>
-              <Plus size={12} />
-              添加
-            </Button>
+          <div className="flex-none border-b border-line2 bg-panel2/40 px-4 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <TextInput
+                autoFocus
+                value={addUrl}
+                onChange={(event) => {
+                  setAddUrl(event.target.value);
+                  setPreview(null);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return;
+                  void previewAddSource();
+                }}
+                placeholder="UP 主 UID / space.bilibili.com/… / 合集或系列链接 / medialist 链接"
+                className="max-w-xl flex-1"
+              />
+              <Button
+                variant="subtle"
+                size="sm"
+                onClick={() => void previewAddSource()}
+                disabled={previewing || !addUrl.trim()}
+              >
+                {previewing ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                识别
+              </Button>
+              <Button variant="primary" size="sm" onClick={() => void addUrlSource()} disabled={adding || !addUrl.trim()}>
+                {adding ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                订阅
+              </Button>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-dim">
+              <span className="flex-none">时长区间（秒，仅 UP 主投稿生效）</span>
+              <TextInput
+                value={rangeMin}
+                onChange={(event) => {
+                  setRangeMin(event.target.value);
+                  setPreview(null);
+                }}
+                inputMode="numeric"
+                placeholder="最小"
+                className="w-20"
+                aria-label="最小时长（秒）"
+              />
+              <span className="flex-none">–</span>
+              <TextInput
+                value={rangeMax}
+                onChange={(event) => {
+                  setRangeMax(event.target.value);
+                  setPreview(null);
+                }}
+                inputMode="numeric"
+                placeholder="最大"
+                className="w-20"
+                aria-label="最大时长（秒）"
+              />
+              <span className="flex-none">留空 = 不限</span>
+            </div>
+            {preview ? (
+              <div className="mt-2 flex items-start gap-2 rounded-lg border border-line/70 bg-panel p-2">
+                {preview.cover ? (
+                  <img src={preview.cover} alt="" className="h-14 w-14 flex-none rounded object-cover" />
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="truncate text-[12.5px] font-medium text-fg">{preview.title}</span>
+                    <Tag tone="pink">{KIND_LABEL[preview.kind] ?? preview.kind}</Tag>
+                    {preview.itemCount != null ? (
+                      <span className="text-[10.5px] text-dim">{formatCount(preview.itemCount)} 条</span>
+                    ) : null}
+                    <span className="truncate text-[10.5px] text-dim">{preview.description}</span>
+                  </div>
+                  {preview.samples.length > 0 ? (
+                    <div className="mt-1 truncate text-[10.5px] text-muted" title={preview.samples.join('\n')}>
+                      {preview.samples.map((sample) => shorten(sample, 24)).join(' · ')}
+                    </div>
+                  ) : null}
+                  {preview.warning ? (
+                    <div className="mt-1 flex items-start gap-1 text-[10.5px] text-yellow">
+                      <AlertTriangle size={11} className="mt-0.5 flex-none" />
+                      <span>{preview.warning}</span>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-1.5 text-[10.5px] leading-4 text-dim">
+                支持：UP 主 UID 或空间链接、合集 collectiondetail?sid=、系列 seriesdetail?sid=、视频列表
+                medialist/detail/ml…；粘贴后按「识别」可先确认条数与最新几条标题。
+              </div>
+            )}
           </div>
         ) : null}
 
@@ -742,10 +975,15 @@ export function SourcesView({
                           ) : null}
                         </div>
                         <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[10.5px] text-dim">
-                          <Tag tone="pink">{KIND_LABEL[source.kind] ?? source.kind}</Tag>
+                          <Tag tone="pink">{kindLabel(source)}</Tag>
                           <span title={source.lastSyncedAt ? formatDateTime(source.lastSyncedAt) : '尚未同步'}>
                             {source.lastSyncedAt ? `${formatRelative(source.lastSyncedAt)}同步` : '尚未同步'}
                           </span>
+                          {source.lastAdded > 0 ? (
+                            <span className="text-green" title="上一次同步新增的条目">
+                              +{source.lastAdded}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="mt-1 truncate text-[10.5px] text-dim/80" title={sourceSubtitle(source)}>
                           {sourceSubtitle(source)}
@@ -758,10 +996,11 @@ export function SourcesView({
                       </div>
                     </div>
                     <div className="mt-auto flex items-center gap-2 border-t border-line2/70 pt-2">
-                      <div className="grid flex-1 grid-cols-3 gap-1 text-center">
+                      <div className="grid flex-1 grid-cols-4 gap-1 text-center">
                         <CountStat label="条目" value={source.itemCount} />
                         <CountStat label="已下载" value={source.downloadedCount} tone="green" />
                         <CountStat label="失效" value={source.unavailableCount} tone="red" />
+                        <CountStat label="充电" value={source.paidCount} tone="yellow" />
                       </div>
                       <button
                         type="button"
@@ -796,12 +1035,13 @@ export function SourcesView({
           ) : (
             <div className="overflow-x-auto">
               <div className="min-w-[680px] overflow-hidden rounded-xl border border-line/70">
-                <div className="grid grid-cols-[minmax(0,1fr)_76px_56px_64px_56px_104px_92px] items-center gap-2 border-b border-line2 bg-panel2/60 px-3 py-2 text-[10.5px] text-dim">
+                <div className="grid grid-cols-[minmax(0,1fr)_76px_56px_64px_56px_52px_104px_92px] items-center gap-2 border-b border-line2 bg-panel2/60 px-3 py-2 text-[10.5px] text-dim">
                   <span>来源</span>
                   <span>类型</span>
                   <span className="text-right">条目</span>
                   <span className="text-right">已下载</span>
                   <span className="text-right">失效</span>
+                  <span className="text-right">充电</span>
                   <span>最近同步</span>
                   <span className="text-right">同步全部</span>
                 </div>
@@ -820,7 +1060,7 @@ export function SourcesView({
                         }
                       }}
                       className={clsx(
-                        'grid cursor-pointer grid-cols-[minmax(0,1fr)_76px_56px_64px_56px_104px_92px] items-center gap-2 border-b border-line2/60 px-3 py-2 last:border-b-0 hover:bg-panel2/50',
+                        'grid cursor-pointer grid-cols-[minmax(0,1fr)_76px_56px_64px_56px_52px_104px_92px] items-center gap-2 border-b border-line2/60 px-3 py-2 last:border-b-0 hover:bg-panel2/50',
                         pendingSourceId === source.id && 'opacity-60'
                       )}
                     >
@@ -860,7 +1100,7 @@ export function SourcesView({
                           </div>
                         </div>
                       </div>
-                      <Tag tone="pink">{KIND_LABEL[source.kind] ?? source.kind}</Tag>
+                      <Tag tone="pink">{kindLabel(source)}</Tag>
                       <div className="text-right font-mono text-[12px] text-fg" title={formatExact(source.itemCount)}>
                         {formatCount(source.itemCount)}
                       </div>
@@ -870,8 +1110,18 @@ export function SourcesView({
                       <div className="text-right font-mono text-[12px] text-red" title={formatExact(source.unavailableCount)}>
                         {formatCount(source.unavailableCount)}
                       </div>
+                      <div
+                        className={clsx(
+                          'text-right font-mono text-[12px]',
+                          source.paidCount > 0 ? 'text-yellow' : 'text-dim'
+                        )}
+                        title={`${formatExact(source.paidCount)} 条充电专属/付费稿件，不会进下载队列`}
+                      >
+                        {formatCount(source.paidCount)}
+                      </div>
                       <div className="text-[10.5px] text-dim" title={source.lastSyncedAt ? formatDateTime(source.lastSyncedAt) : '尚未同步'}>
                         {source.lastSyncedAt ? formatRelative(source.lastSyncedAt) : '尚未同步'}
+                        {source.lastAdded > 0 ? <span className="ml-1 text-green">+{source.lastAdded}</span> : null}
                       </div>
                       <div className="flex items-center justify-end gap-1.5">
                         <MiniSwitch
@@ -890,6 +1140,7 @@ export function SourcesView({
         </div>
       </div>
         {downloadAllModal}
+        {rescueModal}
       </>
     );
   }
@@ -916,7 +1167,7 @@ export function SourcesView({
               <span className="truncate text-[14px] font-semibold text-fg" title={activeSource?.title}>
                 {activeSource?.title}
               </span>
-              {activeSource ? <Tag tone="pink">{KIND_LABEL[activeSource.kind] ?? activeSource.kind}</Tag> : null}
+              {activeSource ? <Tag tone="pink">{kindLabel(activeSource)}</Tag> : null}
               {activeSource && sourceLink(activeSource) ? (
                 <button
                   type="button"
@@ -941,7 +1192,20 @@ export function SourcesView({
                   <span title={activeSource.lastSyncedAt ? formatDateTime(activeSource.lastSyncedAt) : '尚未同步'}>
                     {activeSource.lastSyncedAt ? `${formatRelative(activeSource.lastSyncedAt)}同步` : '尚未同步'}
                   </span>
-                  <span>·</span>
+                  {activeSource.lastAdded > 0 ? (
+                    <>
+                      <span>·</span>
+                      <span className="text-green">新增 {formatCount(activeSource.lastAdded)}</span>
+                    </>
+                  ) : null}
+                  {activeSource.paidCount > 0 ? (
+                    <>
+                      <span>·</span>
+                      <span className="text-yellow" title="充电专属/付费稿件，不能直接下载">
+                        充电 {formatCount(activeSource.paidCount)}
+                      </span>
+                    </>
+                  ) : null}
                   <span className="max-w-[360px] truncate" title={sourceSubtitle(activeSource)}>
                     {sourceSubtitle(activeSource)}
                   </span>
@@ -958,6 +1222,35 @@ export function SourcesView({
                 title="参与后，点「同步全部」时会同步这个来源；不会在后台定时同步"
               >
                 {activeSource.syncEnabled ? '参与同步全部' : '不参与同步全部'}
+              </Chip>
+            ) : null}
+            {activeSource && (activeSource.kind === 'space' || activeSource.kind === 'collection') ? (
+              <Chip
+                active={activeSource.autoDownload}
+                tone={activeSource.autoDownload ? 'blue' : 'default'}
+                onClick={() => toggleAutoDownload(activeSource)}
+                title="开启后，每次同步只把「本次新增」的条目加入下载队列"
+              >
+                新增自动下载
+              </Chip>
+            ) : null}
+            {activeSource && activeSource.kind === 'space' ? (
+              <Chip
+                active={!isRangeEmpty({ min: activeSource.minDuration, max: activeSource.maxDuration })}
+                tone={
+                  isRangeEmpty({ min: activeSource.minDuration, max: activeSource.maxDuration })
+                    ? 'default'
+                    : 'blue'
+                }
+                onClick={() =>
+                  setRangeDraft({
+                    min: activeSource.minDuration != null ? String(activeSource.minDuration) : '',
+                    max: activeSource.maxDuration != null ? String(activeSource.maxDuration) : ''
+                  })
+                }
+                title="订阅时长区间（秒）：超出区间的视频不会入库，也看不到"
+              >
+                时长 {describeRange({ min: activeSource.minDuration, max: activeSource.maxDuration })}
               </Chip>
             ) : null}
             <Button variant="primary" size="sm" onClick={() => void syncActive()} disabled={syncing}>
@@ -1021,7 +1314,44 @@ export function SourcesView({
           <Chip active={onlyUnavailable} onClick={() => setOnlyUnavailable((value) => !value)} tone="red">
             仅失效
           </Chip>
-          <div className="ml-auto flex min-w-0 items-center gap-2">
+          <div className="ml-auto flex min-w-0 flex-wrap items-center gap-2">
+            {rangeDraft && activeSource?.kind === 'space' ? (
+              <div className="flex items-center gap-1 rounded-md border border-blue/40 bg-panel2 px-1.5 py-0.5">
+                <span className="text-[10.5px] text-dim">时长（秒）</span>
+                <input
+                  autoFocus
+                  value={rangeDraft.min}
+                  onChange={(event) => setRangeDraft({ ...rangeDraft, min: event.target.value })}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void saveRange();
+                    if (event.key === 'Escape') setRangeDraft(null);
+                  }}
+                  inputMode="numeric"
+                  placeholder="最小"
+                  aria-label="最小时长（秒）"
+                  className="h-6 w-16 rounded border border-line bg-panel px-1 text-[11px] text-fg placeholder:text-dim focus:border-blue/50 focus:outline-none"
+                />
+                <span className="text-[10.5px] text-dim">–</span>
+                <input
+                  value={rangeDraft.max}
+                  onChange={(event) => setRangeDraft({ ...rangeDraft, max: event.target.value })}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') void saveRange();
+                    if (event.key === 'Escape') setRangeDraft(null);
+                  }}
+                  inputMode="numeric"
+                  placeholder="最大"
+                  aria-label="最大时长（秒）"
+                  className="h-6 w-16 rounded border border-line bg-panel px-1 text-[11px] text-fg placeholder:text-dim focus:border-blue/50 focus:outline-none"
+                />
+                <Button variant="primary" size="sm" onClick={() => void saveRange()}>
+                  保存
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setRangeDraft(null)}>
+                  取消
+                </Button>
+              </div>
+            ) : null}
             {noteDraft === null ? (
               <button
                 type="button"
@@ -1087,14 +1417,18 @@ export function SourcesView({
                 <Inbox size={24} />
               </div>
               <div>
-                <div className="text-[14px] font-medium text-fg">还没有同步过这个来源</div>
+                <div className="text-[14px] font-medium text-fg">
+                  {activeSource?.lastSyncedAt ? '这个来源暂时没有可下载的条目' : '还没有同步过这个来源'}
+                </div>
                 <p className="mt-1 max-w-sm text-[12px] leading-5 text-dim">
-                  同步只拉取清单与元数据（标题、UP、封面），不会自动下载视频。
+                  {activeSource?.lastSyncedAt
+                    ? '清单可能为空，或条目全部已下载 / 已失效 / 属于充电专属。'
+                    : '同步只拉取清单与元数据（标题、UP、封面），不会自动下载视频。'}
                 </p>
               </div>
               <Button variant="primary" size="sm" onClick={() => void syncActive()} disabled={syncing}>
                 {syncing ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-                立即同步
+                {activeSource?.lastSyncedAt ? '重新同步' : '立即同步'}
               </Button>
             </div>
           )
@@ -1102,7 +1436,8 @@ export function SourcesView({
           <div className="grid grid-cols-1 gap-2 p-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
             {items.map((item) => {
               const checked = selected.includes(item.id);
-              const disabled = item.state === 'unavailable' || Boolean(item.downloadedVideoId);
+              const disabled =
+                item.state === 'unavailable' || item.state === 'paid' || Boolean(item.downloadedVideoId);
               return (
                 <div
                   key={item.id}
@@ -1144,13 +1479,36 @@ export function SourcesView({
                       <CheckCircle2 size={10} />
                     </span>
                     {item.downloadedVideoId ? (
-                      <Tag tone="green" className="absolute right-1 top-1">
-                        已下载
+                      <Tag
+                        tone={item.downloadedElsewhere ? 'blue' : 'green'}
+                        className="absolute right-1 top-1"
+                        title={
+                          item.downloadedElsewhere
+                            ? '这条视频已从其它来源下载到本地，不会重复下载'
+                            : undefined
+                        }
+                      >
+                        {item.downloadedElsewhere ? '库中已有' : '已下载'}
                       </Tag>
                     ) : null}
                     {item.state === 'unavailable' ? (
                       <Tag tone="red" className="absolute left-1 top-6">
                         已失效
+                      </Tag>
+                    ) : null}
+                    {item.state === 'rescued' ? (
+                      <Tag
+                        tone="purple"
+                        className="absolute left-1 top-6"
+                        title="B 站已不可播放，但本地已有副本（自动关联）"
+                      >
+                        已补档
+                      </Tag>
+                    ) : null}
+                    {item.state === 'paid' ? (
+                      <Tag tone="yellow" className="absolute left-1 top-6">
+                        <Crown size={9} />
+                        充电专属
                       </Tag>
                     ) : null}
                   </div>
@@ -1196,7 +1554,8 @@ export function SourcesView({
           <ul className="divide-y divide-line2">
             {items.map((item) => {
               const checked = selected.includes(item.id);
-              const disabled = item.state === 'unavailable' || Boolean(item.downloadedVideoId);
+              const disabled =
+                item.state === 'unavailable' || item.state === 'paid' || Boolean(item.downloadedVideoId);
               return (
                 <li
                   key={item.id}
@@ -1256,8 +1615,30 @@ export function SourcesView({
                           已失效
                         </Tag>
                       ) : null}
+                      {item.state === 'rescued' ? (
+                        <Tag tone="purple" title="B 站已不可播放，但本地已有副本（自动关联）">
+                          已补档
+                        </Tag>
+                      ) : null}
+                      {item.state === 'paid' ? (
+                        <Tag tone="yellow">
+                          <Crown size={9} />
+                          充电专属
+                        </Tag>
+                      ) : null}
                       {item.state === 'unknown' ? <Tag tone="yellow">状态未知</Tag> : null}
-                      {item.downloadedVideoId ? <Tag tone="green">已下载</Tag> : null}
+                      {item.downloadedVideoId ? (
+                        <Tag
+                          tone={item.downloadedElsewhere ? 'blue' : 'green'}
+                          title={
+                            item.downloadedElsewhere
+                              ? '这条视频已从其它来源下载到本地，不会重复下载'
+                              : undefined
+                          }
+                        >
+                          {item.downloadedElsewhere ? '库中已有' : '已下载'}
+                        </Tag>
+                      ) : null}
                       {item.jobStatus && !item.downloadedVideoId ? (
                         <Tag tone="yellow">{JOB_LABEL[item.jobStatus] ?? item.jobStatus}</Tag>
                       ) : null}
@@ -1317,6 +1698,7 @@ export function SourcesView({
       </div>
       {downloadAllModal}
       {removeModal}
+      {rescueModal}
     </>
   );
 }

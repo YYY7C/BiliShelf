@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/ipc';
 import type { BilishelfApi } from '../shared/ipc';
+import type { AiQualityConfig } from '../shared/aiQuality';
 import type {
   AcrCloudInput,
   AcrCloudSummary,
@@ -21,6 +22,9 @@ import type {
   AiProviderTestResult,
   AiQueueSnapshot,
   AiReviewCounts,
+  AiReviewAudit,
+  AiBulkReviewInput,
+  AiBulkReviewResult,
   AiReviewDecision,
   AiReviewItem,
   AiReviewPage,
@@ -52,9 +56,15 @@ import type {
   QualityPreset,
   RemoteItemsQuery,
   RemoteItemsResult,
+  RescuePlan,
+  RescueListItem,
+  RescueSearchResult,
+  ScreenshotInput,
+  ScreenshotResult,
   SmartCollection,
   SourceKind,
   SourcePatch,
+  SourcePreview,
   SourceSummary,
   SyncProgress,
   TagSummary,
@@ -127,8 +137,37 @@ const api: BilishelfApi = {
   },
   sources: {
     list: (): Promise<SourceSummary[]> => ipcRenderer.invoke(IPC.sourcesList),
-    add: (input: { kind: SourceKind; url?: string; remoteId?: string; title?: string }) =>
-      ipcRenderer.invoke(IPC.sourcesAdd, input),
+    add: (input: {
+      kind: SourceKind | 'auto';
+      url?: string;
+      remoteId?: string;
+      title?: string;
+      minDuration?: number | null;
+      maxDuration?: number | null;
+    }) => ipcRenderer.invoke(IPC.sourcesAdd, input),
+    preview: (input: {
+      url?: string;
+      remoteId?: string;
+      minDuration?: number | null;
+      maxDuration?: number | null;
+    }): Promise<SourcePreview> => ipcRenderer.invoke(IPC.sourcesPreview, input),
+    rescuePlan: (input: {
+      sourceId?: number | null;
+      remoteItemIds?: number[];
+      limit?: number;
+      verifyTop?: number;
+    }): Promise<RescuePlan> => ipcRenderer.invoke(IPC.sourcesRescuePlan, input),
+    rescueSearch: (input: {
+      bvid: string;
+      title?: string | null;
+      duration?: number | null;
+      upName?: string | null;
+      verifyTop?: number;
+    }): Promise<RescueSearchResult> => ipcRenderer.invoke(IPC.sourcesRescueSearch, input),
+    rescueTitles: (input: { sourceId?: number | null; bvids?: string[] }) =>
+      ipcRenderer.invoke(IPC.sourcesRescueTitles, input),
+    rescueList: (): Promise<RescueListItem[]> => ipcRenderer.invoke(IPC.sourcesRescueList),
+    rescueRepair: () => ipcRenderer.invoke(IPC.sourcesRescueRepair),
     update: (id: number, patch: SourcePatch) => ipcRenderer.invoke(IPC.sourcesUpdate, id, patch),
     remove: (id: number) => ipcRenderer.invoke(IPC.sourcesRemove, id),
     sync: (id: number) => ipcRenderer.invoke(IPC.sourcesSync, id),
@@ -149,6 +188,7 @@ const api: BilishelfApi = {
     resume: (id: number) => ipcRenderer.invoke(IPC.jobsResume, id),
     pauseAll: () => ipcRenderer.invoke(IPC.jobsPauseAll),
     resumeAll: () => ipcRenderer.invoke(IPC.jobsResumeAll),
+    retryAllFailed: () => ipcRenderer.invoke(IPC.jobsRetryAllFailed),
     cancel: (id: number) => ipcRenderer.invoke(IPC.jobsCancel, id),
     retry: (id: number) => ipcRenderer.invoke(IPC.jobsRetry, id),
     clear: () => ipcRenderer.invoke(IPC.jobsClear)
@@ -178,6 +218,7 @@ const api: BilishelfApi = {
     logout: (): Promise<AuthStatus> => ipcRenderer.invoke(IPC.authLogout)
   },
   ai: {
+    qualityRules: (): Promise<AiQualityConfig> => ipcRenderer.invoke(IPC.aiQualityRules),
     providers: {
       list: (): Promise<AiProviderSummary[]> => ipcRenderer.invoke(IPC.aiProvidersList),
       save: (input: AiProviderInput) => ipcRenderer.invoke(IPC.aiProvidersSave, input),
@@ -225,6 +266,10 @@ const api: BilishelfApi = {
         ipcRenderer.invoke(IPC.aiReviewApprove, input),
       reject: (input: AiReviewDecision): Promise<AiReviewResult> =>
         ipcRenderer.invoke(IPC.aiReviewReject, input),
+      audit: (query?: AiReviewQuery): Promise<AiReviewAudit> =>
+        ipcRenderer.invoke(IPC.aiReviewAudit, query),
+      bulk: (input: AiBulkReviewInput): Promise<AiBulkReviewResult> =>
+        ipcRenderer.invoke(IPC.aiReviewBulk, input),
       updateTag: (input: AiReviewTagPatch): Promise<AiReviewItem | null> =>
         ipcRenderer.invoke(IPC.aiReviewUpdateTag, input),
       addTag: (input: AiReviewTagAdd): Promise<AiReviewItem | null> =>
@@ -256,7 +301,9 @@ const api: BilishelfApi = {
     }
   },
   player: {
-    progress: (id: number, position: number) => ipcRenderer.invoke(IPC.playerProgress, id, position)
+    progress: (id: number, position: number) => ipcRenderer.invoke(IPC.playerProgress, id, position),
+    screenshot: (input: ScreenshotInput): Promise<ScreenshotResult> =>
+      ipcRenderer.invoke(IPC.playerScreenshot, input)
   },
   events: {
     onJobs: (cb: (snapshot: JobsSnapshot) => void) => subscribe(IPC.eventJobs, cb),

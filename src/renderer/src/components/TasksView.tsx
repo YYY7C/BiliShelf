@@ -129,6 +129,21 @@ export function TasksView({ jobs, total, counts, engineReady, onRefresh }: Tasks
             <Pause size={12} />
             全部暂停
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={bulkBusy || !jobs.some((job) => job.status === 'failed')}
+            title="把所有失败任务重新排队（适合 CDN 抖动或刚改完下载代理）"
+            onClick={() =>
+              void bulkAct(
+                () => api.jobs.retryAllFailed(),
+                (count) => (count > 0 ? `已重新排队 ${count} 个失败任务` : '没有失败任务')
+              )
+            }
+          >
+            <RotateCcw size={12} />
+            重试全部失败
+          </Button>
           <Button variant="ghost" size="sm" onClick={onRefresh}>
             <RotateCcw size={12} />
             刷新

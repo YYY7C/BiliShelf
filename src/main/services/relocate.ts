@@ -6,7 +6,16 @@ import { activeJobCount } from '../db/jobs';
 import { ensureLibraryDirs, libraryPaths } from '../paths';
 import { updateSettings } from '../store';
 
-const ENTRIES = ['library.db', 'library.db-wal', 'library.db-shm', 'media', 'cache', 'backups', 'logs'];
+const ENTRIES = [
+  'library.db',
+  'library.db-wal',
+  'library.db-shm',
+  'media',
+  'cache',
+  'backups',
+  'logs',
+  'screenshots'
+];
 
 /**
  * 整体迁移素材库到新目录（同盘 rename，跨盘 copy+delete）。

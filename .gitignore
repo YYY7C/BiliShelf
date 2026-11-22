@@ -16,6 +16,9 @@ media/
 cache/
 backups/
 logs/
+screenshots/
+# AI 本地配置（质量规则 / 分类归一词表 / 提示词关键词，只存本机）
+ai-quality.json
 
 # 内置引擎（约 265MB，用 scripts/prepare-engines.ps1 重新获取）
 resources/bin/

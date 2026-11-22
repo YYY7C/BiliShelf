@@ -1,7 +1,14 @@
 import clsx from 'clsx';
-import { Check, ChevronDown, ChevronUp, Clock, Pencil, Plus, RotateCcw, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Clock, Pencil, Plus, RotateCcw, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { AiReviewItem, AiReviewTag } from '@shared/types';
+import {
+  detectIssues,
+  EMPTY_QUALITY_CONFIG,
+  isHardIssue,
+  issueLabel,
+  type AiQualityConfig
+} from '@shared/aiQuality';
 import { formatDuration } from '../../lib/format';
 import {
   AI_REVIEW_STATUS_CLASS,
@@ -20,6 +27,8 @@ interface AiReviewRowProps {
   selected: boolean;
   busy?: boolean;
   defaultMinConfidence?: number;
+  /** 质量规则来自素材库本地的 ai-quality.json，没配置时不做冲突提示 */
+  quality?: AiQualityConfig;
   onToggleRow: () => void;
   onApprove: (tagIds: number[]) => void;
   onReject: (tagIds: number[]) => void;
@@ -40,6 +49,7 @@ export function AiReviewRow({
   selected,
   busy,
   defaultMinConfidence = 0.5,
+  quality = EMPTY_QUALITY_CONFIG,
   onToggleRow,
   onApprove,
   onReject,
@@ -80,6 +90,16 @@ export function AiReviewRow({
   }, [item.aiTags]);
 
   const pendingCount = item.aiTags.filter(tagIsSelectable).length;
+  const pendingIssues = useMemo(
+    () =>
+      detectIssues(
+        item.aiTags
+          .filter(tagIsSelectable)
+          .map((tag) => ({ name: tag.name, category: tag.category, confidence: tag.confidence })),
+        quality
+      ).filter(isHardIssue),
+    [item.aiTags, quality]
+  );
   const selectedPending = item.aiTags.filter((tag) => tagIsSelectable(tag) && selectedTags.has(tag.id));
 
   const selectAllPending = () => {
@@ -169,6 +189,16 @@ export function AiReviewRow({
               </span>
               {item.reviewStatus === 'pending' ? (
                 <span className="flex-none font-mono text-[10px] text-yellow">{pendingCount} 待审</span>
+              ) : null}
+              {pendingIssues.length > 0 ? (
+                <span
+                  className="flex flex-none items-center gap-0.5 rounded border border-red/40 bg-red/10 px-1.5 py-0.5 text-[10px] text-red"
+                  title={pendingIssues.map((kind) => issueLabel(kind, quality)).join('、')}
+                >
+                  <AlertTriangle size={9} />
+                  {issueLabel(pendingIssues[0]!, quality)}
+                  {pendingIssues.length > 1 ? ` +${pendingIssues.length - 1}` : ''}
+                </span>
               ) : null}
               <div className="ml-auto flex flex-none items-center gap-1">
                 {pendingCount > 0 ? (

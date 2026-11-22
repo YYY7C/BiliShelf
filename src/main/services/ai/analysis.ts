@@ -17,6 +17,7 @@ import {
   DEFAULT_PROMPT_TEMPLATE,
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TAXONOMY,
+  MAX_ANALYSIS_CATEGORIES,
   MAX_ANALYSIS_SAMPLES,
   MIN_SAMPLES_PER_GROUP
 } from '@shared/aiDefaults';
@@ -162,9 +163,12 @@ export function estimateAnalysis(input: AiAnalysisInput): AiAnalysisEstimate {
   const runtime = input.providerId ? getProviderRuntime(input.providerId) : null;
   const batchSize = textBatchSize(runtime?.summary.contextWindow);
   const textRequests = input.mode === 'vision' ? 0 : Math.ceil(count / batchSize);
-  // 视觉模式的分类体系为空，实际按默认 6 类取代表视频；文本/混合用「分类数 ≈ 样本数/3」估算，
+  // 视觉模式的分类体系为空，代表视频按默认分类数取；文本/混合用「分类数 ≈ 样本数/3」估算，
   // 但分类合并后最多 12 个（prune 上限），估算也要跟着封顶，否则大样本会高估请求数
-  const categoryGuess = input.mode === 'vision' ? 6 : Math.min(12, Math.max(2, Math.ceil(count / 3)));
+  const categoryGuess =
+    input.mode === 'vision'
+      ? DEFAULT_TAXONOMY.categories.length
+      : Math.min(MAX_ANALYSIS_CATEGORIES, Math.max(2, Math.ceil(count / 3)));
   const visionRequests =
     input.mode === 'text'
       ? 0
@@ -505,6 +509,7 @@ export async function runAnalysis(
               maxTokens: ANALYSIS_TEXT_TOKENS,
               jsonMode: runtime.summary.capabilities.jsonMode,
               imageDetail: 'low',
+              reasoningEffort: runtime.summary.reasoningEffort,
               timeoutMs: settings.aiTimeoutMs
             },
             parseAnalysis,
@@ -588,6 +593,7 @@ export async function runAnalysis(
                 maxTokens: ANALYSIS_VISION_TOKENS,
                 jsonMode: runtime.summary.capabilities.jsonMode,
                 imageDetail: runtime.summary.imageDetail,
+                reasoningEffort: runtime.summary.reasoningEffort,
                 timeoutMs: settings.aiTimeoutMs
               },
               parseAnalysis,

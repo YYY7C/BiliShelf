@@ -114,7 +114,8 @@ function blankProvider(): AiProviderInput {
     capabilities: { vision: true, tools: true, jsonMode: true, audio: false },
     temperature: 0.2,
     maxTokens: 1200,
-    contextWindow: undefined,
+    contextWindow: 1_000_000,
+    reasoningEffort: 'default',
     timeoutMs: 120_000,
     maxRetries: 2,
     imageDetail: 'auto',
@@ -135,6 +136,7 @@ function fromSummary(provider: AiProviderSummary): AiProviderInput {
     temperature: provider.temperature,
     maxTokens: provider.maxTokens,
     contextWindow: provider.contextWindow,
+    reasoningEffort: provider.reasoningEffort ?? 'default',
     timeoutMs: provider.timeoutMs,
     maxRetries: provider.maxRetries,
     imageDetail: provider.imageDetail,
@@ -637,6 +639,15 @@ export function AiModelSettings() {
                   onChange={(event) => void updateSetting({ aiMaxRetries: Number(event.target.value) || 0 })}
                 />
               </Field>
+              <Field label="失败自动重跑" hint="单条运行失败后自动重新排队；0 表示关闭。">
+                <TextInput
+                  type="number"
+                  min={0}
+                  max={5}
+                  value={settings?.aiAutoRetry ?? 2}
+                  onChange={(event) => void updateSetting({ aiAutoRetry: Number(event.target.value) || 0 })}
+                />
+              </Field>
               <Field label="最大工具轮次">
                 <TextInput
                   type="number"
@@ -886,13 +897,37 @@ export function AiModelSettings() {
                   onChange={(event) => setEditing({ ...editing, temperature: Number(event.target.value) })}
                 />
               </Field>
-              <Field label="最大输出 tokens">
+              <Field label="最大输出 tokens" hint="128 ~ 128000；推理模型的 reasoning 也算在额度里。">
                 <TextInput
                   type="number"
                   min={128}
-                  max={32000}
+                  max={128000}
                   value={editing.maxTokens}
                   onChange={(event) => setEditing({ ...editing, maxTokens: Number(event.target.value) })}
+                />
+              </Field>
+              <Field label="上下文窗口" hint="输入侧上限，库级分析据此自适应分批；默认 1M。">
+                <TextInput
+                  type="number"
+                  min={1024}
+                  max={10000000}
+                  value={editing.contextWindow ?? 1_000_000}
+                  onChange={(event) => setEditing({ ...editing, contextWindow: Number(event.target.value) })}
+                />
+              </Field>
+              <Field label="思考强度" hint="网关不支持该参数时会自动退回模型默认行为。">
+                <Select
+                  value={editing.reasoningEffort ?? 'default'}
+                  onChange={(value) =>
+                    setEditing({ ...editing, reasoningEffort: value as AiProviderInput['reasoningEffort'] })
+                  }
+                  options={[
+                    { value: 'default', label: '默认（不指定，跟随模型）' },
+                    { value: 'low', label: '低' },
+                    { value: 'medium', label: '中' },
+                    { value: 'high', label: '高' },
+                    { value: 'max', label: '最高（max，DeepSeek 系支持）' }
+                  ]}
                 />
               </Field>
               <Field label="超时（ms）">

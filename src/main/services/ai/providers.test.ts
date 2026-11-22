@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AiChatError, parseOpenAiResponse } from './providers';
+import { AiChatError, parseOpenAiResponse, reasoningEffortParam } from './providers';
 
 // providers.ts 会通过 ./config 读取 electron 的 safeStorage，单测里只测响应解析，直接替换掉。
 vi.mock('./config', () => ({ getProviderRuntime: vi.fn() }));
@@ -81,5 +81,29 @@ describe('parseOpenAiResponse', () => {
     );
 
     expect(result.toolCalls).toEqual([{ id: 'call_1', name: 'identify_music', args: { seconds: 15 } }]);
+  });
+});
+
+describe('reasoningEffortParam', () => {
+  it('默认值不传参', () => {
+    expect(reasoningEffortParam(undefined)).toEqual({});
+    expect(reasoningEffortParam('default')).toEqual({});
+  });
+
+  // DeepSeek 系（OpenCode Go）要同时给 thinking 开关和 reasoning_effort，档位只有 low / high / max
+  it('DeepSeek 模型发 thinking 开关 + reasoning_effort', () => {
+    expect(reasoningEffortParam('max', 'deepseek-v4.1-flash')).toEqual({
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'max'
+    });
+    expect(reasoningEffortParam('low', 'deepseek-v4.1-flash')).toEqual({
+      thinking: { type: 'enabled' },
+      reasoning_effort: 'low'
+    });
+  });
+
+  it('其它网关只发 reasoning_effort，max 降级为 high', () => {
+    expect(reasoningEffortParam('high', 'gpt-6-luna')).toEqual({ reasoning_effort: 'high' });
+    expect(reasoningEffortParam('max', 'gpt-6-luna')).toEqual({ reasoning_effort: 'high' });
   });
 });

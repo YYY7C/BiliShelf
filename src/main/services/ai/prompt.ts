@@ -18,28 +18,12 @@ export interface RenderedPrompt {
   hash: string;
 }
 
-const MUSIC_KEYWORDS = [
-  '音乐',
-  'bgm',
-  'BGM',
-  '翻唱',
-  '舞蹈',
-  '宅舞',
-  '演奏',
-  'mv',
-  'MV',
-  '歌曲',
-  '钢琴',
-  '吉他',
-  '说唱',
-  'rap',
-  'RAP',
-  '古风',
-  '电音',
-  'DJ',
-  'dj',
-  '编舞'
-];
+let musicKeywords: string[] = [];
+
+/** 由 qualityRules 从素材库的 ai-quality.json 读入；为空时不会主动提示调用音乐识别 */
+export function setMusicKeywords(list: string[]): void {
+  musicKeywords = list;
+}
 
 function formatDuration(seconds: number | null | undefined): string {
   if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return '未知';
@@ -60,7 +44,7 @@ function formatTaxonomy(profile: AiTagProfile): string {
 
 export function buildBgmHint(video: PromptVideo): string {
   const haystack = [video.title, video.description ?? '', ...(video.tags ?? [])].join(' ');
-  const matched = MUSIC_KEYWORDS.filter((keyword) => haystack.includes(keyword));
+  const matched = musicKeywords.filter((keyword) => keyword && haystack.includes(keyword));
   const quoted = Array.from(haystack.matchAll(/《([^》]{1,60})》/g))
     .map((match) => match[1]?.trim())
     .filter(Boolean)

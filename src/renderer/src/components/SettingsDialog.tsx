@@ -429,6 +429,33 @@ export function SettingsDialog({ info, settings, auth, engines, onClose, onReloa
                 </Field>
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <Field
+                  label="下载代理"
+                  hint="B 站建议直连：系统代理会让 mcdn/P2P 节点超时、报 424；只有必须走代理的网络才选「跟随系统」。"
+                >
+                  <Select
+                    value={local?.downloadProxy ?? 'direct'}
+                    onChange={(value) => void update({ downloadProxy: value as 'system' | 'direct' })}
+                    options={[
+                      { value: 'direct', label: '直连（推荐）' },
+                      { value: 'system', label: '跟随系统代理' }
+                    ]}
+                  />
+                </Field>
+                <Field label="失败自动重试" hint="mcdn 超时 / 424 / 断流等网络错误的重试次数，0 表示关闭。">
+                  <TextInput
+                    type="number"
+                    min={0}
+                    max={5}
+                    value={local?.downloadAutoRetry ?? 2}
+                    onChange={(event) =>
+                      void update({ downloadAutoRetry: Number(event.target.value) || 0 })
+                    }
+                  />
+                </Field>
+              </div>
+
               <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-1">
                 <Toggle
                   checked={local?.writeNfo ?? false}

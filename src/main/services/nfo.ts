@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { VideoItem } from '@shared/types';
 import { fromLibraryRelative, libraryPaths, toLibraryRelative } from '../paths';
 import { getAsset, getVideo, getVideoRow, setAsset } from '../db/videos';
 
@@ -74,6 +73,3 @@ ${premiered ? `  <premiered>${premiered}</premiered>` : ''}
   }
 }
 
-export function describeVideoForNfo(video: VideoItem | null): string {
-  return video?.title ?? '';
-}

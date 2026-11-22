@@ -12,7 +12,8 @@ import type {
   AiPricing,
   AiProtocol,
   AiProviderInput,
-  AiProviderSummary
+  AiProviderSummary,
+  AiReasoningEffort
 } from '@shared/types';
 
 const FILE_NAME = 'ai-config.json';
@@ -29,6 +30,7 @@ interface StoredProvider {
   temperature: number;
   maxTokens: number;
   contextWindow?: number;
+  reasoningEffort?: AiReasoningEffort;
   timeoutMs: number;
   maxRetries: number;
   imageDetail: AiImageDetail;
@@ -140,11 +142,14 @@ function sanitizeProvider(input: StoredProvider): StoredProvider {
     capabilities: sanitizeCapabilities(input.capabilities),
     temperature: Number.isFinite(input.temperature) ? Math.min(2, Math.max(0, input.temperature)) : 0.2,
     maxTokens: Number.isFinite(input.maxTokens)
-      ? Math.min(32000, Math.max(128, Math.round(input.maxTokens)))
+      ? Math.min(128_000, Math.max(128, Math.round(input.maxTokens)))
       : 1200,
     contextWindow: Number.isFinite(input.contextWindow)
       ? Math.min(10_000_000, Math.max(1024, Math.round(input.contextWindow!)))
       : undefined,
+    reasoningEffort: ['low', 'medium', 'high', 'max'].includes(String(input.reasoningEffort))
+      ? input.reasoningEffort
+      : 'default',
     timeoutMs: Number.isFinite(input.timeoutMs)
       ? Math.min(600_000, Math.max(10_000, Math.round(input.timeoutMs)))
       : 120_000,
@@ -252,6 +257,7 @@ function summaryFor(provider: StoredProvider): AiProviderSummary {
     temperature: provider.temperature,
     maxTokens: provider.maxTokens,
     contextWindow: provider.contextWindow,
+    reasoningEffort: provider.reasoningEffort ?? 'default',
     timeoutMs: provider.timeoutMs,
     maxRetries: provider.maxRetries,
     imageDetail: provider.imageDetail,
@@ -269,11 +275,6 @@ function ensureDefault(providers: StoredProvider[]): StoredProvider[] {
 
 export function listProviders(): AiProviderSummary[] {
   return readConfig().providers.map(summaryFor);
-}
-
-export function getProvider(id: string): AiProviderSummary | null {
-  const provider = readConfig().providers.find((item) => item.id === id);
-  return provider ? summaryFor(provider) : null;
 }
 
 export function getDefaultProvider(): AiProviderSummary | null {
@@ -328,6 +329,7 @@ export function saveProvider(input: AiProviderInput): AiProviderSummary[] {
     temperature: input.temperature,
     maxTokens: input.maxTokens,
     contextWindow: input.contextWindow,
+    reasoningEffort: input.reasoningEffort,
     timeoutMs: input.timeoutMs,
     maxRetries: input.maxRetries,
     imageDetail: input.imageDetail,

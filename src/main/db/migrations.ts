@@ -418,5 +418,49 @@ export const migrations: Migration[] = [
       ALTER TABLE ai_runs ADD COLUMN request_count INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE ai_runs ADD COLUMN music_request_count INTEGER NOT NULL DEFAULT 0;
     `
+  },
+  {
+    id: 11,
+    name: 'ai_profile_allow_extra_tags',
+    sql: /* sql */ `
+      ALTER TABLE ai_tag_profiles ADD COLUMN allow_extra_tags INTEGER NOT NULL DEFAULT 0;
+    `
+  },
+  {
+    id: 12,
+    name: 'ai_run_auto_retry',
+    sql: /* sql */ `
+      ALTER TABLE ai_runs ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0;
+    `
+  },
+  {
+    id: 13,
+    name: 'source_auto_download',
+    sql: /* sql */ `
+      ALTER TABLE sources ADD COLUMN auto_download INTEGER NOT NULL DEFAULT 0;
+    `
+  },
+  {
+    id: 14,
+    name: 'source_duration_range',
+    sql: /* sql */ `
+      ALTER TABLE sources ADD COLUMN min_duration INTEGER;
+      ALTER TABLE sources ADD COLUMN max_duration INTEGER;
+    `
+  },
+  {
+    // 旧逻辑把「标签全被取代」的运行重算成 pending，导致历史里显示待审却点不进任何条目
+    id: 15,
+    name: 'ai_run_superseded_status',
+    sql: /* sql */ `
+      UPDATE ai_runs
+         SET review_status = 'superseded'
+       WHERE review_status = 'pending'
+         AND status IN ('done', 'failed', 'canceled')
+         AND NOT EXISTS (
+           SELECT 1 FROM ai_run_tags t
+            WHERE t.run_id = ai_runs.id AND t.status <> 'superseded'
+         );
+    `
   }
 ];

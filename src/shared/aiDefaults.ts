@@ -1,4 +1,4 @@
-import type { AiTaxonomy, AiTaxonomyCategory } from './types';
+import type { AiTaxonomy } from './types';
 
 export const DEFAULT_MAX_TAGS = 12;
 export const DEFAULT_MIN_CONFIDENCE = 0.5;
@@ -11,6 +11,10 @@ export const MIN_SAMPLES_PER_GROUP = 3;
 export const MAX_VISION_TARGETS = 16;
 /** 其中随机补充几条 */
 export const VISION_RANDOM_EXTRA = 2;
+/** 库级分析合并后的分类上限（估算请求数与最终裁剪共用） */
+export const MAX_ANALYSIS_CATEGORIES = 12;
+/** 合并后保留的关注点上限 */
+export const MAX_ANALYSIS_FOCUS = 10;
 
 export const DEFAULT_FOCUS = ['人物形象', '服饰', '动作', '场景', '风格', 'BGM', '情绪'];
 
@@ -19,12 +23,12 @@ export const DEFAULT_TAXONOMY: AiTaxonomy = {
     {
       name: '人物',
       description: '人物形象、发型、气质、人数、性别表达',
-      examples: ['长发', '双马尾', '短发', '戴眼镜', '群体']
+      examples: ['长发', '短发', '戴眼镜', '单人', '多人']
     },
     {
       name: '服饰',
       description: '服装类型、制服、配饰、颜色、风格',
-      examples: ['JK制服', '汉服', '洛丽塔', '过膝袜', '配饰']
+      examples: ['上衣', '长裙', '外套', '帽子', '眼镜']
     },
     {
       name: '动作',
@@ -44,7 +48,7 @@ export const DEFAULT_TAXONOMY: AiTaxonomy = {
     {
       name: 'BGM',
       description: '曲名、艺术家、流派、节奏、乐器',
-      examples: ['《曲名》', '电子流行', '钢琴']
+      examples: ['电子流行', '钢琴', '民谣']
     },
     {
       name: '情绪',
@@ -92,7 +96,7 @@ BGM 线索：{{bgmHint}}
 export const OUTPUT_SCHEMA_JSON = JSON.stringify(
   {
     summary: '一句话概括视频内容，60 字以内',
-    tags: [{ name: 'JK制服', category: '服饰', confidence: 0.94, evidence: '第 2 帧人物穿着' }],
+    tags: [{ name: '标签名', category: '分类名', confidence: 0.94, evidence: '第 2 帧人物穿着' }],
     bgm: {
       title: '曲名或 null',
       artists: ['艺术家'],
@@ -105,9 +109,3 @@ export const OUTPUT_SCHEMA_JSON = JSON.stringify(
   2
 );
 
-export function defaultTaxonomyCategories(): AiTaxonomyCategory[] {
-  return DEFAULT_TAXONOMY.categories.map((category) => ({
-    ...category,
-    examples: category.examples ? [...category.examples] : []
-  }));
-}

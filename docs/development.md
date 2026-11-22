@@ -98,7 +98,8 @@ src/
 ├─ cache/ai/                  AI 抽帧 + 15 秒音频片段缓存（可清理）
 ├─ cache/temp/                cookies / 下载暂存（任务结束即删）
 ├─ backups/
-└─ logs/
+├─ logs/
+└─ screenshots/               播放器截图导出的原始分辨率 PNG
 ```
 
 AI 标签只写 `metadata.json` 的 `aiTags` / `aiTaggedAt`，不写 NFO；重建索引时只恢复已通过的 AI 标签，审核历史不恢复。

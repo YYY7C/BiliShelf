@@ -15,6 +15,16 @@ export function formatSelector(quality: QualityPreset): string {
   }
 }
 
+/**
+ * 网络类失败是否值得自动重试。
+ * 412 风控（RATE_LIMIT）、无权限（FORBIDDEN）、已下架（NOT_FOUND）、磁盘满（DISK）都不重试。
+ */
+export function shouldAutoRetry(code: string, attempts: number, limit: number): boolean {
+  if (code !== 'DOWNLOAD') return false;
+  if (!Number.isFinite(limit) || limit <= 0) return false;
+  return attempts < limit;
+}
+
 export function mapYtdlpError(stderr: string): { code: string; message: string } {
   const text = stderr || '';
   if (/412|Too Many Requests|请求过于频繁/i.test(text)) {
@@ -31,6 +41,21 @@ export function mapYtdlpError(stderr: string): { code: string; message: string }
   }
   if (/ENOSPC|no space/i.test(text)) {
     return { code: 'DISK', message: '磁盘空间不足。' };
+  }
+  if (/HTTP Error 424|Failed Dependency/i.test(text)) {
+    return {
+      code: 'DOWNLOAD',
+      message: 'CDN 拒绝下载（HTTP 424，常见于 mcdn/P2P 节点或被代理拦截）。可在 设置 → 下载 把「下载代理」改为直连后重试。'
+    };
+  }
+  if (/mcdn|Read timed out|ConnectionReset|Connection aborted|UNEXPECTED_EOF|RemoteDisconnected/i.test(text)) {
+    return {
+      code: 'DOWNLOAD',
+      message: 'CDN 连接中断（多见于 mcdn/P2P 节点或代理问题）。建议把 设置 → 下载 的「下载代理」改为直连，或稍后重试。'
+    };
+  }
+  if (/more expected|read, \d+ more/i.test(text)) {
+    return { code: 'DOWNLOAD', message: '下载被中断（连接提前关闭），可重试；若持续出现请改用直连。' };
   }
   return { code: 'DOWNLOAD', message: text.split(/\r?\n/).filter(Boolean).slice(-3).join(' ') || '下载失败' };
 }

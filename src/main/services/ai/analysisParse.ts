@@ -1,3 +1,5 @@
+import { MAX_ANALYSIS_CATEGORIES, MAX_ANALYSIS_FOCUS } from '@shared/aiDefaults';
+import type { CategoryRule } from '@shared/aiQuality';
 import { extractJson } from './normalize';
 
 export interface ParsedAnalysis {
@@ -55,33 +57,24 @@ function asCoverage(value: unknown): number | undefined {
   return Math.min(1, Math.max(0, normalized));
 }
 
+let categoryRules: CategoryRule[] = [];
+
 /**
  * 多轮分析（每批文本 + 每条代表视频）都会自己起分类名，
- * 直接按名字合并会留下「人物与气质 / 人物气质 / 人物与角色」这类同义分类。
- * 这里按关键词把常见分类归一到固定桶；匹配不到的名字原样保留，
- * 所以美食、教程等其它类型的库不会被误伤。
+ * 直接按名字合并会留下「甲与气质 / 甲气质 / 甲与角色」这类同义分类。
+ * 词表属于用户数据，由 qualityRules 从素材库的 ai-quality.json 读入；
+ * 匹配不到的名字原样保留，所以美食、教程等其它类型的库不会被误伤。
  */
-const CATEGORY_RULES: Array<[RegExp, string]> = [
-  [/ip|二次元|动漫|作品|角色/i, 'IP与角色'],
-  [/舞蹈|舞种|编舞|动作/, '舞蹈'],
-  [/bgm|曲目|音乐|歌曲|音频/i, 'BGM'],
-  [/服饰|服装|穿搭|造型|妆造|装扮/, '服饰造型'],
-  // 「鞋袜与身体细节 / 鞋袜与腿部细节」这类写法本质还是穿搭细节，归到同一个桶
-  [/鞋|袜|裸足|赤足|光腿|腿型|腿部|身体细节|皮肤/, '服饰造型'],
-  [/人物|人设|气质|形象|颜值/, '人物'],
-  [/场景|环境|场地|布景|拍摄|镜头/, '场景与拍摄'],
-  [/情绪|氛围|风格|感觉/, '情绪风格'],
-  [/形式|技术|制作|画质|时长|版本/, '制作与形式'],
-  [/节庆|节日|主题|企划|活动|季节/, '主题企划'],
-  [/道具|配饰/, '道具与配饰'],
-  [/菜系|口味|烹饪|食材/, '菜系与做法']
-];
+export function setCategoryRules(rules: CategoryRule[]): void {
+  categoryRules = rules;
+}
 
 export function canonicalCategoryName(name: string): string {
   const trimmed = name.trim();
   if (!trimmed) return trimmed;
-  for (const [pattern, canonical] of CATEGORY_RULES) {
-    if (pattern.test(trimmed)) return canonical;
+  const lower = trimmed.toLocaleLowerCase();
+  for (const rule of categoryRules) {
+    if (rule.any.some((needle) => lower.includes(needle.toLocaleLowerCase()))) return rule.canonical;
   }
   return trimmed.slice(0, 40);
 }
@@ -125,7 +118,8 @@ export function sanitizeAnalysis(raw: unknown): ParsedAnalysis {
   return {
     summary: asText(source.summary ?? source.overview, 1000),
     categories,
-    focus: asTextList(source.focus ?? source.focusAreas, 30, 40),
+    // 关注点是一条「维度：具体看什么」的描述，40 字装不下，会从中间截断
+    focus: asTextList(source.focus ?? source.focusAreas, 30, 200),
     stopwords: asTextList(source.stopwords ?? source.exclude, 100, 40),
     aliases,
     systemPrompt: asText(source.systemPrompt ?? source.system_prompt, 8000),
@@ -164,8 +158,8 @@ export function pruneMergedAnalysis<T extends MergedAnalysisShape>(
   result: T,
   limits: { categories?: number; focus?: number } = {}
 ): T {
-  const maxCategories = limits.categories ?? 12;
-  const maxFocus = limits.focus ?? 10;
+  const maxCategories = limits.categories ?? MAX_ANALYSIS_CATEGORIES;
+  const maxFocus = limits.focus ?? MAX_ANALYSIS_FOCUS;
 
   // 单轮结果内部就可能出现同名分类（多轮合并只按名字对齐，管不到同一轮里的重复）
   const byName = new Map<string, MergedAnalysisShape['categories'][number]>();

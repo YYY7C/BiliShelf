@@ -4,6 +4,7 @@ import log from 'electron-log/main';
 import type {
   AiAnalysisInput,
   AiAnalysisSaveInput,
+  AiBulkReviewInput,
   AiEnqueueInput,
   AiProviderInput,
   AiReviewDecision,
@@ -20,6 +21,7 @@ import type {
   EnqueueInput,
   LibraryQuery,
   RemoteItemsQuery,
+  ScreenshotInput,
   SourcePatch,
   ToolKind,
   UpdateVideoPatch
@@ -41,7 +43,7 @@ import {
   updateVideo
 } from './db/videos';
 import { jobStatusCounts, jobTotalCount, listJobs } from './db/jobs';
-import { listSources, queryRemoteItems, updateSource } from './db/sources';
+import { listRescueItems, listSources, queryRemoteItems, repairRescuedItems, updateSource } from './db/sources';
 import {
   createFolder,
   createTag,
@@ -65,6 +67,7 @@ import {
   countEnqueueCandidates,
   enqueueAllRemoteItems,
   enqueueRemoteItems,
+  previewSource,
   removeSources,
   syncAllSources,
   syncSource
@@ -80,11 +83,15 @@ import {
 import { importFiles, rebuildFromDisk, videoAbsolutePath, writeSidecar } from './services/library';
 import { getAuthStatus, logout, openLoginWindow } from './services/auth';
 import { cacheRemoteCovers } from './services/covers';
+import { planRescue, recoverRescueTitles, searchRescueCandidates } from './services/rescue';
 import { relocateLibrary } from './services/relocate';
+import { captureScreenshot } from './services/screenshot';
 import { getSettings, updateSettings, defaultLibraryRoot } from './store';
 import {
   aiStats,
+  auditReview,
   batchSnapshot,
+  bulkReview,
   deleteProfile,
   duplicateProfile,
   ensureDefaultProfile,
@@ -128,6 +135,7 @@ import {
 } from './services/ai/analysis';
 import { MAX_ANALYSIS_SAMPLES } from '@shared/aiDefaults';
 import { cleanupAiCache } from './services/ai/frames';
+import { getQualityConfig } from './services/qualityRules';
 
 type WindowGetter = () => BrowserWindow | null;
 
@@ -234,8 +242,9 @@ const aiProviderSchema = z.object({
     audio: z.boolean()
   }),
   temperature: z.number().min(0).max(2),
-  maxTokens: z.number().int().min(128).max(32000),
+  maxTokens: z.number().int().min(128).max(128_000),
   contextWindow: z.number().int().min(1024).max(10_000_000).optional(),
+  reasoningEffort: z.enum(['default', 'low', 'medium', 'high', 'max']).optional(),
   timeoutMs: z.number().int().min(10_000).max(600_000),
   maxRetries: z.number().int().min(0).max(5),
   imageDetail: z.enum(['low', 'auto', 'high']),
@@ -273,17 +282,17 @@ const aiProfileSchema = z.object({
   scope: z.enum(['global', 'source']),
   sourceId: idSchema.nullable().optional(),
   isDefault: z.boolean().optional(),
-  focus: z.array(z.string().max(40)).max(30),
+  focus: z.array(z.string().max(200)).max(30),
   taxonomy: z.object({
     categories: z
       .array(
         z.object({
           name: z.string().min(1).max(40),
           description: z.string().max(300).optional(),
-          examples: z.array(z.string().max(60)).max(50).optional()
+          examples: z.array(z.string().max(60)).max(100).optional()
         })
       )
-      .max(20),
+      .max(40),
     stopwords: z.array(z.string().max(40)).max(200),
     aliases: z.record(z.string(), z.string())
   }),
@@ -293,7 +302,8 @@ const aiProfileSchema = z.object({
   minConfidence: z.number().min(0).max(1),
   language: z.string().max(20),
   useAcrcloud: z.boolean(),
-  useBilibiliTags: z.boolean()
+  useBilibiliTags: z.boolean(),
+  allowExtraTags: z.boolean().optional()
 });
 
 const aiEnqueueSchema = z.object({
@@ -318,12 +328,13 @@ const aiRunQuerySchema = z.object({
 });
 
 const aiReviewQuerySchema = z.object({
-  status: z.enum(['pending', 'partial', 'approved', 'rejected', 'all']).optional(),
+  status: z.enum(['pending', 'partial', 'approved', 'rejected', 'superseded', 'all']).optional(),
   profileId: idSchema.optional(),
   sourceId: idSchema.optional(),
   videoId: idSchema.optional(),
   search: z.string().max(200).optional(),
   minConfidence: z.number().min(0).max(1).optional(),
+  conflicts: z.literal('any').optional(),
   limit: z.number().int().min(1).max(200).optional(),
   offset: z.number().int().min(0).optional()
 });
@@ -548,6 +559,29 @@ export function registerIpc(windowGetter: WindowGetter): void {
   ipcMain.handle(IPC.aiReviewReject, (_e, input: AiReviewDecision) =>
     wrap(async () => {
       const result = await rejectReview(aiReviewDecisionSchema.parse(input ?? {}));
+      send(IPC.eventAiReview);
+      return result;
+    })
+  );
+  ipcMain.handle(IPC.aiReviewAudit, (_e, query: AiReviewQuery) =>
+    wrap(() => auditReview(aiReviewQuerySchema.parse(query ?? {}) as AiReviewQuery))
+  );
+  ipcMain.handle(IPC.aiQualityRules, () => wrap(() => getQualityConfig()));
+  ipcMain.handle(IPC.aiReviewBulk, (_e, input: AiBulkReviewInput) =>
+    wrap(async () => {
+      const parsed = z
+        .object({
+          action: z.enum(['approve', 'reject']),
+          onlyClean: z.boolean().optional(),
+          query: aiReviewQuerySchema.optional()
+        })
+        .parse(input ?? {});
+      const result = await bulkReview({
+        action: parsed.action,
+        onlyClean: parsed.onlyClean,
+        query: parsed.query as AiReviewQuery | undefined
+      });
+      broadcastLibrary();
       send(IPC.eventAiReview);
       return result;
     })
@@ -846,14 +880,16 @@ export function registerIpc(windowGetter: WindowGetter): void {
   ipcMain.handle(IPC.sourcesList, () => wrap(() => listSources()));
   ipcMain.handle(
     IPC.sourcesAdd,
-    (_e, input: { kind: string; url?: string; remoteId?: string; title?: string }) =>
+    (_e, input: { kind?: string; url?: string; remoteId?: string; title?: string; minDuration?: number | null; maxDuration?: number | null }) =>
       wrap(async () => {
         const parsed = z
           .object({
-            kind: z.enum(['favorite', 'watch_later', 'space', 'collection']),
+            kind: z.enum(['auto', 'favorite', 'watch_later', 'space', 'collection']).default('auto'),
             url: z.string().max(500).optional(),
             remoteId: z.string().max(500).optional(),
-            title: z.string().max(200).optional()
+            title: z.string().max(200).optional(),
+            minDuration: z.number().int().min(0).max(86400).nullable().optional(),
+            maxDuration: z.number().int().min(0).max(86400).nullable().optional()
           })
           .parse(input ?? {});
         const result = await addSources(parsed);
@@ -861,11 +897,79 @@ export function registerIpc(windowGetter: WindowGetter): void {
         return result;
       })
   );
+  ipcMain.handle(
+    IPC.sourcesPreview,
+    (_e, input: { url?: string; remoteId?: string; minDuration?: number | null; maxDuration?: number | null }) =>
+      wrap(async () => {
+        const parsed = z
+          .object({
+            url: z.string().max(500).optional(),
+            remoteId: z.string().max(500).optional(),
+            minDuration: z.number().int().min(0).max(86400).nullable().optional(),
+            maxDuration: z.number().int().min(0).max(86400).nullable().optional()
+          })
+          .parse(input ?? {});
+        return previewSource(parsed);
+      })
+  );
+  ipcMain.handle(
+    IPC.sourcesRescuePlan,
+    (_e, input: { sourceId?: number | null; remoteItemIds?: number[]; limit?: number; verifyTop?: number }) =>
+      wrap(async () => {
+        const parsed = z
+          .object({
+            sourceId: idSchema.nullable().optional(),
+            remoteItemIds: z.array(idSchema).max(200).optional(),
+            limit: z.number().int().min(1).max(200).optional(),
+            verifyTop: z.number().int().min(1).max(10).optional()
+          })
+          .parse(input ?? {});
+        return planRescue(parsed);
+      })
+  );
+  ipcMain.handle(
+    IPC.sourcesRescueSearch,
+    (_e, input: { bvid: string; title?: string | null; duration?: number | null; upName?: string | null; verifyTop?: number }) =>
+      wrap(async () => {
+        const parsed = z
+          .object({
+            bvid: z.string().regex(/^BV[0-9A-Za-z]{10}$/),
+            title: z.string().max(300).nullable().optional(),
+            duration: z.number().int().min(0).max(86400).nullable().optional(),
+            upName: z.string().max(100).nullable().optional(),
+            verifyTop: z.number().int().min(1).max(10).optional()
+          })
+          .parse(input ?? {});
+        return searchRescueCandidates(parsed);
+      })
+  );
+  ipcMain.handle(IPC.sourcesRescueTitles, (_e, input: { sourceId?: number | null; bvids?: string[] }) =>
+    wrap(async () => {
+      const parsed = z
+        .object({
+          sourceId: idSchema.nullable().optional(),
+          bvids: z.array(z.string().regex(/^BV[0-9A-Za-z]{10}$/)).max(500).optional()
+        })
+        .parse(input ?? {});
+      return recoverRescueTitles(parsed);
+    })
+  );
+  ipcMain.handle(IPC.sourcesRescueList, () => wrap(() => listRescueItems()));
+  ipcMain.handle(IPC.sourcesRescueRepair, () =>
+    wrap(() => {
+      const repaired = repairRescuedItems();
+      broadcastSources();
+      return repaired;
+    })
+  );
   ipcMain.handle(IPC.sourcesUpdate, (_e, id: number, patch: SourcePatch) =>
     wrap(() => {
       const parsed = z
         .object({
           syncEnabled: z.boolean().optional(),
+          autoDownload: z.boolean().optional(),
+          minDuration: z.number().int().min(0).max(86400).nullable().optional(),
+          maxDuration: z.number().int().min(0).max(86400).nullable().optional(),
           note: z.string().max(500).nullable().optional()
         })
         .parse(patch ?? {});
@@ -951,6 +1055,7 @@ export function registerIpc(windowGetter: WindowGetter): void {
   ipcMain.handle(IPC.jobsResume, (_e, id: number) => wrap(() => downloadManager.resume(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsPauseAll, () => wrap(() => downloadManager.pauseAll()));
   ipcMain.handle(IPC.jobsResumeAll, () => wrap(() => downloadManager.resumeAll()));
+  ipcMain.handle(IPC.jobsRetryAllFailed, () => wrap(() => downloadManager.retryAllFailed()));
   ipcMain.handle(IPC.jobsCancel, (_e, id: number) => wrap(() => downloadManager.cancel(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsRetry, (_e, id: number) => wrap(() => downloadManager.retry(idSchema.parse(id))));
   ipcMain.handle(IPC.jobsClear, () => wrap(() => downloadManager.clearFinished()));
@@ -1034,6 +1139,19 @@ export function registerIpc(windowGetter: WindowGetter): void {
 
   ipcMain.handle(IPC.playerProgress, (_e, id: number, position: number) =>
     wrap(() => recordPlayback(idSchema.parse(id), Number(position) || 0))
+  );
+
+  ipcMain.handle(IPC.playerScreenshot, (_e, input: ScreenshotInput) =>
+    wrap(() =>
+      captureScreenshot(
+        z
+          .object({
+            videoId: idSchema,
+            time: z.number().min(0)
+          })
+          .parse(input ?? {}) as ScreenshotInput
+      )
+    )
   );
 
   log.info('[ipc] registered');

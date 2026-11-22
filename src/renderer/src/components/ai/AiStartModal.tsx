@@ -50,13 +50,14 @@ export function AiStartModal({
 
   useEffect(() => {
     if (!open) return;
+    // 用户在素材库里选好了视频才点「开始打标」时，默认就按选中范围，避免误打整个库
+    if (useUi.getState().selection.length > 0) setScope('selection');
     void Promise.all([api.ai.providers.list(), api.ai.profiles.list(), api.sources.list()])
       .then(([nextProviders, nextProfiles, nextSources]) => {
         setProviders(nextProviders);
         setProfiles(nextProfiles);
         setSources(nextSources);
         setSourceId((current) => current ?? nextSources[0]?.id ?? null);
-        setProfileId((current) => current ?? nextProfiles.find((profile) => profile.isDefault)?.id ?? null);
       })
       .catch((error: unknown) => pushToast('error', (error as Error).message));
   }, [open, pushToast]);
@@ -65,6 +66,15 @@ export function AiStartModal({
 
   useEffect(() => {
     if (!open) return;
+    if (scope === 'selection') {
+      setTotal(selection.length);
+      return;
+    }
+    if (scope === 'source' && !sourceId) {
+      // 没有来源时不能退化成「整个素材库」，否则界面写着指定来源、实际打标全库
+      setTotal(0);
+      return;
+    }
     let alive = true;
     const query =
       scope === 'filter'
@@ -80,10 +90,6 @@ export function AiStartModal({
         : scope === 'source' && sourceId
           ? { status: 'present' as const, sourceId }
           : { status: 'present' as const };
-    if (scope === 'selection') {
-      setTotal(selection.length);
-      return;
-    }
     api.library
       .query({ ...query, limit: 1 })
       .then((result) => {
@@ -95,17 +101,19 @@ export function AiStartModal({
     };
   }, [filters, open, scope, selection.length, sourceId]);
 
+  const limitValue = Number(limit);
+  const limitCount = Number.isFinite(limitValue) && limitValue > 0 ? Math.min(5000, Math.round(limitValue)) : null;
+  const targetCount = limitCount ? Math.min(total, limitCount) : total;
   const frameCount = settings?.aiFrameCount ?? 3;
   const includeCover = settings?.aiIncludeCover !== false;
-  const imageCount = total * (frameCount + (includeCover ? 1 : 0));
-  const approxTokens = imageCount * 800 + total * 300;
+  const imageCount = targetCount * (frameCount + (includeCover ? 1 : 0));
+  const approxTokens = imageCount * 800 + targetCount * 300;
 
   const buildInput = (): AiEnqueueInput => {
-    const numericLimit = Number(limit);
     const input: AiEnqueueInput = {
       profileId: profileId ?? undefined,
       force,
-      limit: Number.isFinite(numericLimit) && numericLimit > 0 ? Math.round(numericLimit) : undefined
+      limit: limitCount ?? undefined
     };
     if (scope === 'selection') input.videoIds = selection;
     else if (scope === 'source' && sourceId) input.scope = { type: 'source', sourceId };
@@ -280,8 +288,9 @@ export function AiStartModal({
         </div>
 
         <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-2 text-[11px] leading-5 text-dim">
-          预计：{total} 个视频 · {imageCount} 张图片 · 约 {formatTokens(approxTokens)}{' '}
-          tokens（估算，实际以模型返回为准）
+          预计：{targetCount} 个视频
+          {limitCount && limitCount < total ? `（库内匹配 ${total} 条，按上限截断）` : ''} · {imageCount}{' '}
+          张图片 · 约 {formatTokens(approxTokens)} tokens（估算，实际以模型返回为准）
         </div>
 
         {consentHosts ? (
@@ -325,7 +334,7 @@ export function AiStartModal({
           <Button
             variant="primary"
             onClick={() => void start()}
-            disabled={busy || total === 0 || profiles.length === 0}
+            disabled={busy || targetCount === 0 || profiles.length === 0}
           >
             <Play size={13} />
             {busy ? '处理中…' : '开始打标'}

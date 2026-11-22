@@ -15,7 +15,7 @@ Windows 桌面 · 单机单用户 · 离线优先 · 数据全部在本机。
 | 模块   | 已实现                                                                                  |
 | ------ | --------------------------------------------------------------------------------------- |
 | 素材库 | 网格 / 列表虚拟滚动、封面虚化背景、搜索、批量选择、评分 / 标签 / 备注                   |
-| 来源   | 收藏夹、稍后再看、UP 主 / 合集；先同步清单，再选择性下载；支持「全部下载」与进度 / 取消 |
+| 来源   | 收藏夹、稍后再看、UP 主投稿、合集 / 系列 / 视频列表；粘贴 UID 或链接自动识别，先同步清单再选择性下载；支持「全部下载」、新增自动下载、充电专属标记与进度 / 取消 |
 | 下载   | yt-dlp 队列、最高画质、暂存替换、画质升级、已下载去重                                   |
 | 播放   | 本地 `bilishelf://` 播放、弹幕、SRT/VTT 字幕、续播进度                                  |
 | 整理   | 标签、文件夹、1–5 星评分、备注、回收站；独立「本地标签」、AI 标签搜索 / 筛选            |
@@ -62,7 +62,7 @@ npm run dev
 | [使用与快捷键](docs/usage.md)       | 快捷键、侧栏作用域、整理与修复、外观设置    |
 | [AI 自动打标](docs/ai-tagging.md)   | Provider、ACRCloud、标签方案、审核与隐私    |
 | [开发与打包](docs/development.md)   | 环境要求、命令、NSIS / 便携版打包、目录结构 |
-| [实测状态](docs/status.md)          | 已跑通链路、维护实测、未验证项              |
+| [失效补档](docs/rescue.md)          | 失效判定链、存档检索、打分与已知坑          |
 | [排障记录](docs/troubleshooting.md) | 下载、封面、弹幕、画质升级等踩坑记录        |
 | [油猴脚本](docs/userscript.md)      | B 站动态短视频过滤 / 快速收藏脚本           |
 | [CHANGELOG.md](CHANGELOG.md)        | 版本变化                                    |
@@ -80,7 +80,6 @@ npm run dev
 
 ## 参考资料
 
-- 预研文档：[docs/bili-shelf-pre-research.html](docs/bili-shelf-pre-research.html)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) · [Artplayer](https://github.com/zhw2590582/ArtPlayer) · [Danmaku.js](https://github.com/weizhenye/Danmaku)
 - [bili-sync](https://github.com/amtoaer/bili-sync)（同步/调度参考）
 

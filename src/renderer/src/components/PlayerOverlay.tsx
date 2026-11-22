@@ -1,12 +1,13 @@
 import Artplayer from 'artplayer';
 import clsx from 'clsx';
 import Danmaku from 'danmaku';
-import { ExternalLink, MessageSquare, MessageSquareOff, Play, X } from 'lucide-react';
+import { Camera, ExternalLink, FolderOpen, MessageSquare, MessageSquareOff, Play, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { VideoItem } from '@shared/types';
 import { api } from '../lib/bridge';
 import { parseBilibiliDanmaku } from '../lib/danmaku';
 import { formatDuration } from '../lib/format';
+import { useUi } from '../lib/store';
 import { IconButton, Spinner } from './ui';
 
 interface PlayerOverlayProps {
@@ -19,10 +20,13 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
   const [loading, setLoading] = useState(true);
   const [danmakuOn, setDanmakuOn] = useState(true);
   const [danmakuCount, setDanmakuCount] = useState(0);
+  const [lastShot, setLastShot] = useState<{ name: string; path: string } | null>(null);
+  const pushToast = useUi((state) => state.pushToast);
   const hostRef = useRef<HTMLDivElement>(null);
   const artRef = useRef<Artplayer | null>(null);
   const danmakuRef = useRef<Danmaku | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
+  const shotRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -45,6 +49,14 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
       if (event.key === 'Escape' && !document.fullscreenElement) {
         event.stopPropagation();
         onClose();
+        return;
+      }
+      // S：截图（和 bilibili 网页端一致）
+      if ((event.key === 's' || event.key === 'S') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const target = event.target as HTMLElement | null;
+        if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+        event.preventDefault();
+        shotRef.current?.();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -73,7 +85,7 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
       fullscreen: true,
       fullscreenWeb: true,
       pip: true,
-      screenshot: true,
+      screenshot: false,
       theme: '#fb7299',
       ...(item.subtitleUrl
         ? {
@@ -94,6 +106,49 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
     artRef.current = art;
     // 必须在 Artplayer 初始化之后再挂弹幕层，否则会被播放器清空/尺寸为 0
     host.appendChild(layer);
+
+    /**
+     * 内置截图走 canvas.toDataURL，跨源视频会让画布被污染而报错；
+     * 这里改成让主进程用 ffmpeg 直接从源文件解一帧，得到真正的原图。
+     */
+    let capturing = false;
+    const takeScreenshot = async () => {
+      if (capturing) return;
+      capturing = true;
+      try {
+        const shot = await api.player.screenshot({
+          videoId: item.id,
+          time: Number.isFinite(art.currentTime) ? art.currentTime : 0
+        });
+        setLastShot({ name: shot.name, path: shot.path });
+        pushToast(
+          'success',
+          `已保存原图 ${shot.width}×${shot.height} · ${(shot.bytes / 1024 / 1024).toFixed(1)}MB · ${shot.relativePath}`
+        );
+      } catch (error) {
+        pushToast('error', (error as Error).message);
+      } finally {
+        capturing = false;
+      }
+    };
+    shotRef.current = () => void takeScreenshot();
+
+    try {
+      art.controls.add({
+        name: 'bilishelf-screenshot',
+        position: 'right',
+        index: 15,
+        tooltip: '截图（导出原图）',
+        mounted: (control) => {
+          control.appendChild(art.icons.screenshot);
+        },
+        click: () => {
+          void takeScreenshot();
+        }
+      });
+    } catch (error) {
+      console.warn('[player] screenshot control failed', error);
+    }
 
     art.on('ready', () => {
       if (item.playPosition > 5 && item.playPosition < (item.duration ?? Infinity) - 10) {
@@ -137,6 +192,7 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
 
     return () => {
       disposed = true;
+      shotRef.current = null;
       try {
         danmakuRef.current?.destroy();
       } catch {
@@ -152,7 +208,7 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
       layer.remove();
       layerRef.current = null;
     };
-  }, [item]);
+  }, [item, pushToast]);
 
   useEffect(() => {
     const danmaku = danmakuRef.current;
@@ -207,6 +263,23 @@ export function PlayerOverlay({ id, onClose }: PlayerOverlayProps) {
           <ExternalLink size={12} />
           源地址
         </button>
+
+        {lastShot ? (
+          <button
+            type="button"
+            onClick={() => void api.app.showInFolder(lastShot.path)}
+            className="inline-flex h-7 items-center gap-1 rounded-md border border-pink/40 bg-pink/15 px-2 text-[11px] text-pink transition-colors hover:bg-pink/20"
+            title={`在文件夹中显示 ${lastShot.name}`}
+          >
+            <FolderOpen size={12} />
+            截图
+          </button>
+        ) : (
+          <span className="inline-flex h-7 items-center gap-1 rounded-md border border-white/15 bg-white/5 px-2 text-[11px] text-white/45">
+            <Camera size={12} />
+            控制条可截图
+          </span>
+        )}
 
         <IconButton label="关闭播放器" className="text-white/70 hover:text-white" onClick={onClose}>
           <X size={16} />

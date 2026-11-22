@@ -4,7 +4,10 @@ import type {
   AiBatch,
   AiBatchStatus,
   AiBgmResult,
+  AiBulkReviewInput,
+  AiBulkReviewResult,
   AiFrame,
+  AiReviewAudit,
   AiReviewCounts,
   AiReviewDecision,
   AiReviewItem,
@@ -28,6 +31,9 @@ import type {
   AiTagSummary,
   AiTaxonomy
 } from '@shared/types';
+import { LOW_CONFIDENCE_KIND, type AiQualityConfig } from '@shared/aiQuality';
+import { getQualityConfig } from '../services/qualityRules';
+import { anyRuleClause, lowConfidenceClause, ruleClause } from './qualitySql';
 import {
   DEFAULT_FOCUS,
   DEFAULT_MAX_TAGS,
@@ -36,6 +42,7 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   DEFAULT_TAXONOMY
 } from '@shared/aiDefaults';
+import { normalizeKey } from '@shared/text';
 import { all, one, run, tx } from './index';
 
 function now(): string {
@@ -51,10 +58,6 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   }
 }
 
-function normalizeName(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-}
-
 function clamp(value: number, min: number, max: number, fallback: number): number {
   return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
 }
@@ -68,11 +71,11 @@ function sanitizeTaxonomy(input: AiTaxonomy | null | undefined): AiTaxonomy {
         ? category.examples
             .map((example) => String(example).trim())
             .filter(Boolean)
-            .slice(0, 20)
+            .slice(0, 100)
         : []
     }))
     .filter((category) => category.name.length > 0)
-    .slice(0, 20);
+    .slice(0, 40);
   const seen = new Set<string>();
   const uniqueCategories = categories.filter((category) => {
     const key = category.name.toLocaleLowerCase();
@@ -126,6 +129,7 @@ interface ProfileRow {
   language: string;
   use_acrcloud: number;
   use_bilibili_tags: number;
+  allow_extra_tags: number;
   created_at: string;
   updated_at: string;
 }
@@ -148,6 +152,7 @@ function mapProfile(row: ProfileRow): AiTagProfile {
     language: row.language || 'zh-CN',
     useAcrcloud: row.use_acrcloud === 1,
     useBilibiliTags: row.use_bilibili_tags === 1,
+    allowExtraTags: row.allow_extra_tags === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -184,8 +189,8 @@ function createDefaultProfile(): AiTagProfile {
     `INSERT INTO ai_tag_profiles (
        name, description, scope, source_id, is_default, focus_json, taxonomy_json,
        system_prompt, prompt_template, max_tags, min_confidence, language,
-       use_acrcloud, use_bilibili_tags, created_at, updated_at
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       use_acrcloud, use_bilibili_tags, allow_extra_tags, created_at, updated_at
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       '通用方案',
       '默认的通用打标方案，可复制后按收藏夹内容调整。',
@@ -201,6 +206,7 @@ function createDefaultProfile(): AiTagProfile {
       'zh-CN',
       1,
       1,
+      0,
       stamp,
       stamp
     ]
@@ -256,7 +262,7 @@ export function saveProfile(input: AiTagProfileInput): AiTagProfile[] {
         `UPDATE ai_tag_profiles SET
            name = ?, description = ?, scope = ?, source_id = ?, is_default = ?,
            focus_json = ?, taxonomy_json = ?, system_prompt = ?, prompt_template = ?,
-           max_tags = ?, min_confidence = ?, language = ?, use_acrcloud = ?, use_bilibili_tags = ?,
+           max_tags = ?, min_confidence = ?, language = ?, use_acrcloud = ?, use_bilibili_tags = ?, allow_extra_tags = ?,
            updated_at = ?
          WHERE id = ?`,
         [
@@ -274,6 +280,7 @@ export function saveProfile(input: AiTagProfileInput): AiTagProfile[] {
           language,
           input.useAcrcloud ? 1 : 0,
           input.useBilibiliTags ? 1 : 0,
+          input.allowExtraTags ? 1 : 0,
           now(),
           id
         ]
@@ -286,8 +293,8 @@ export function saveProfile(input: AiTagProfileInput): AiTagProfile[] {
         `INSERT INTO ai_tag_profiles (
            name, description, scope, source_id, is_default, focus_json, taxonomy_json,
            system_prompt, prompt_template, max_tags, min_confidence, language,
-           use_acrcloud, use_bilibili_tags, created_at, updated_at
-         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           use_acrcloud, use_bilibili_tags, allow_extra_tags, created_at, updated_at
+         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           name,
           String(input.description ?? '').trim(),
@@ -303,6 +310,7 @@ export function saveProfile(input: AiTagProfileInput): AiTagProfile[] {
           language,
           input.useAcrcloud ? 1 : 0,
           input.useBilibiliTags ? 1 : 0,
+          input.allowExtraTags ? 1 : 0,
           now(),
           now()
         ]
@@ -476,11 +484,6 @@ export function updateBatch(
   run(`UPDATE ai_batches SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
-export function getBatch(id: number): AiBatch | null {
-  const row = one<BatchRow>(`${BATCH_SELECT} WHERE b.id = ?`, [id]);
-  return row ? mapBatch(row) : null;
-}
-
 export function listBatches(limit = 50): AiBatch[] {
   return all<BatchRow>(`${BATCH_SELECT} ORDER BY b.created_at DESC, b.id DESC LIMIT ?`, [
     Math.min(Math.max(limit, 1), 200)
@@ -629,6 +632,7 @@ export function updateRun(
     outputTokens: number;
     requestCount: number;
     musicRequestCount: number;
+    autoRetryCount: number;
     toolCallsJson: string;
     reviewStatus: AiReviewStatus;
     startedAt: string | null;
@@ -651,6 +655,7 @@ export function updateRun(
     ['outputTokens', 'output_tokens'],
     ['requestCount', 'request_count'],
     ['musicRequestCount', 'music_request_count'],
+    ['autoRetryCount', 'auto_retry_count'],
     ['toolCallsJson', 'tool_calls_json'],
     ['reviewStatus', 'review_status'],
     ['startedAt', 'started_at'],
@@ -715,8 +720,26 @@ export function getNextQueuedRun(): RunRow | null {
   );
 }
 
-export function countRunningRuns(): number {
-  return one<{ c: number }>("SELECT COUNT(*) AS c FROM ai_runs WHERE status = 'running'")?.c ?? 0;
+/**
+ * 失败运行自动重跑：只重排「还没用完自动重试次数」的记录。
+ * 调用方负责随后 pump()，这里只改状态。
+ */
+export function requeueFailedRuns(batchId: number, maxRetries: number): number {
+  if (maxRetries <= 0) return 0;
+  const rows = all<{ id: number }>(
+    `SELECT id FROM ai_runs
+      WHERE batch_id = ? AND status = 'failed' AND auto_retry_count < ?`,
+    [batchId, maxRetries]
+  );
+  for (const row of rows) {
+    run(
+      `UPDATE ai_runs SET status = 'queued', stage = NULL, error = NULL,
+         started_at = NULL, finished_at = NULL, auto_retry_count = auto_retry_count + 1
+       WHERE id = ?`,
+      [row.id]
+    );
+  }
+  return rows.length;
 }
 
 export function recoverInterruptedRuns(): number {
@@ -839,7 +862,7 @@ const REVIEW_SELECT = `SELECT r.id AS id, r.id AS run_id, r.video_id, r.review_s
   LEFT JOIN sources s ON s.id = v.source_id
   LEFT JOIN ai_tag_profiles p ON p.id = r.profile_id`;
 
-function buildReviewWhere(query: AiReviewQuery): { clause: string; params: unknown[] } {
+function buildReviewWhere(query: AiReviewQuery, config: AiQualityConfig): { clause: string; params: unknown[] } {
   const where: string[] = [
     "r.status = 'done'",
     "EXISTS (SELECT 1 FROM ai_run_tags t WHERE t.run_id = r.id AND t.status <> 'superseded')"
@@ -854,6 +877,8 @@ function buildReviewWhere(query: AiReviewQuery): { clause: string; params: unkno
     where.push("r.review_status = 'rejected'");
   } else if (status === 'partial') {
     where.push("r.review_status = 'partial'");
+  } else if (status === 'superseded') {
+    where.push("r.review_status = 'superseded'");
   }
   if (query.profileId) {
     where.push('r.profile_id = ?');
@@ -880,7 +905,94 @@ function buildReviewWhere(query: AiReviewQuery): { clause: string; params: unkno
     );
     params.push(query.minConfidence);
   }
+  if (query.conflicts === 'any') {
+    where.push(anyRuleClause(config));
+  }
   return { clause: `WHERE ${where.join(' AND ')}`, params };
+}
+
+/* ------------------------------ 标签质量规则 ------------------------------ */
+
+/** 质量审计：按问题类型统计命中条目数。 */
+export function auditReview(query: AiReviewQuery = {}): AiReviewAudit {
+  const config = getQualityConfig();
+  const { clause, params } = buildReviewWhere({ ...query, status: query.status ?? 'pending' }, config);
+  const totalRow = one<{ runs: number }>(
+    `SELECT COUNT(*) AS runs FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause}`,
+    params
+  );
+  const tagRow = one<{ tags: number }>(
+    `SELECT COUNT(*) AS tags FROM ai_run_tags t
+      WHERE t.status = 'pending'
+        AND t.run_id IN (SELECT r.id FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause})`,
+    params
+  );
+
+  const issues: Record<string, number> = {};
+  for (const rule of config.rules) {
+    issues[rule.kind] =
+      one<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause} AND ${ruleClause(rule)}`,
+        params
+      )?.c ?? 0;
+  }
+  issues[LOW_CONFIDENCE_KIND] =
+    one<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause} AND ${lowConfidenceClause(config)}`,
+      params
+    )?.c ?? 0;
+
+  // 同一条可能同时命中多种规则，先求「有冲突」的并集，再倒推干净条目数，
+  // 不能把上面按规则统计的数字相加（会重复计数）
+  const dirty =
+    one<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause} AND ${anyRuleClause(config)}`,
+      params
+    )?.c ?? 0;
+
+  return {
+    runs: totalRow?.runs ?? 0,
+    pendingTags: tagRow?.tags ?? 0,
+    issues,
+    cleanRuns: Math.max(0, (totalRow?.runs ?? 0) - dirty)
+  };
+}
+
+/**
+ * 批量通过 / 拒绝：按当前筛选条件在数据库侧取全部 run id，分块处理并让出事件循环，
+ * 避免上万条标签一次性阻塞主进程。
+ */
+export async function bulkReview(input: AiBulkReviewInput): Promise<AiBulkReviewResult> {
+  const config = getQualityConfig();
+  const query: AiReviewQuery = { ...(input.query ?? {}), status: input.query?.status ?? 'pending' };
+  const { clause, params } = buildReviewWhere(query, config);
+  const extra = input.onlyClean ? ` AND NOT ${anyRuleClause(config)}` : '';
+  const runIds = all<{ id: number }>(
+    `SELECT r.id AS id FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause}${extra}`,
+    params
+  ).map((row) => row.id);
+
+  const totalRuns = one<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM ai_runs r JOIN videos v ON v.id = r.video_id ${clause}`,
+    params
+  )?.c ?? 0;
+
+  let runs = 0;
+  let tags = 0;
+  const chunkSize = 200;
+  for (let index = 0; index < runIds.length; index += chunkSize) {
+    const chunk = runIds.slice(index, index + chunkSize);
+    const result =
+      input.action === 'approve'
+        ? approveTags({ runIds: chunk })
+        : rejectTags({ runIds: chunk });
+    runs += chunk.length;
+    tags += input.action === 'approve' ? result.approved : result.rejected;
+    // 让出事件循环，避免界面卡死
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  return { runs, tags, skipped: Math.max(0, totalRuns - runIds.length) };
 }
 
 function buildReviewItem(row: ReviewRow): AiReviewItem {
@@ -920,7 +1032,7 @@ function buildReviewItem(row: ReviewRow): AiReviewItem {
 }
 
 export function listReview(query: AiReviewQuery): AiReviewPage {
-  const { clause, params } = buildReviewWhere(query);
+  const { clause, params } = buildReviewWhere(query, getQualityConfig());
   const limit = Math.min(Math.max(query.limit ?? 50, 1), 200);
   const offset = Math.max(query.offset ?? 0, 0);
   const total =
@@ -1035,11 +1147,14 @@ export function recomputeRunReviewStatus(runId: number): AiReviewStatus {
   const pending = counts.get('pending') ?? 0;
   const approved = counts.get('approved') ?? 0;
   const rejected = counts.get('rejected') ?? 0;
-  let status: AiReviewStatus = 'pending';
+  let status: AiReviewStatus;
   if (pending > 0) status = 'pending';
   else if (approved > 0 && rejected > 0) status = 'partial';
   else if (approved > 0) status = 'approved';
   else if (rejected > 0) status = 'rejected';
+  // 没有任何有效标签：标签已被后续运行取代，或这次压根没产出，
+  // 不该继续显示成「待审核」（列表按标签筛选，本来也看不到它）
+  else status = 'superseded';
   run('UPDATE ai_runs SET review_status = ? WHERE id = ?', [status, runId]);
   return status;
 }
@@ -1060,7 +1175,7 @@ export function updateRunTag(patch: {
   if (!name || !category) throw new Error('标签名和分类不能为空');
   run(
     `UPDATE ai_run_tags SET name = ?, normalized_name = ?, category = ?, confidence = ?, edited = 1 WHERE id = ?`,
-    [name, normalizeName(name), category, confidence, patch.tagId]
+    [name, normalizeKey(name), category, confidence, patch.tagId]
   );
   recomputeRunReviewStatus(row.run_id);
   return getReviewItem(row.run_id);
@@ -1087,7 +1202,7 @@ export function addRunTag(input: {
       runRow.video_id,
       category,
       name,
-      normalizeName(name),
+      normalizeKey(name),
       clamp(input.confidence ?? 0.8, 0, 1, 0.8),
       'vision',
       'pending',
@@ -1115,7 +1230,7 @@ export function unapproveTag(
   name: string,
   category: string
 ): { videoId: number; runIds: number[] } {
-  const normalized = normalizeName(name);
+  const normalized = normalizeKey(name);
   const aiTag = one<{ id: number }>('SELECT id FROM ai_tags WHERE normalized_name = ? AND category = ?', [
     normalized,
     category
@@ -1212,7 +1327,7 @@ export function restoreApprovedAiTag(
   const name = String(tag.name ?? '').trim();
   const category = String(tag.category ?? '').trim();
   if (!name || !category) return;
-  const normalized = normalizeName(name);
+  const normalized = normalizeKey(name);
   const approvedAt = tag.approvedAt || now();
   run(
     `INSERT INTO ai_tags (name, normalized_name, category, created_at)
@@ -1232,26 +1347,6 @@ export function restoreApprovedAiTag(
        confidence = excluded.confidence, source = excluded.source, approved_at = excluded.approved_at`,
     [videoId, aiTag.id, null, clamp(tag.confidence, 0, 1, 0.7), tag.source || 'vision', approvedAt]
   );
-}
-
-export function getAiPendingCount(videoId: number): number {
-  return (
-    one<{ c: number }>("SELECT COUNT(*) AS c FROM ai_run_tags WHERE video_id = ? AND status = 'pending'", [
-      videoId
-    ])?.c ?? 0
-  );
-}
-
-export function getAiSummary(videoId: number): { summary: string | null; lastRunAt: string | null } {
-  const row = one<{ result_json: string | null; created_at: string }>(
-    `SELECT result_json, created_at FROM ai_runs
-      WHERE video_id = ? AND status = 'done'
-      ORDER BY created_at DESC, id DESC LIMIT 1`,
-    [videoId]
-  );
-  if (!row) return { summary: null, lastRunAt: null };
-  const result = parseJson<{ summary?: string }>(row.result_json, {});
-  return { summary: result.summary ?? null, lastRunAt: row.created_at };
 }
 
 export function aiStats(): AiStats {

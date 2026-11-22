@@ -4,7 +4,7 @@ import path from 'node:path';
 import log from 'electron-log/main';
 import type { EnqueueInput, JobsSnapshot } from '@shared/types';
 import { qualityLabelText } from '@shared/format';
-import { mapYtdlpError } from '@shared/ytdlp';
+import { mapYtdlpError, shouldAutoRetry } from '@shared/ytdlp';
 import { ensureLibraryDirs, fromLibraryRelative, isInside, libraryPaths, safeSegment, toLibraryRelative } from '../paths';
 import { getSettings } from '../store';
 import * as jobsRepo from '../db/jobs';
@@ -119,6 +119,7 @@ class DownloadManager {
   private intents = new Map<number, Intent>();
   private listeners = new Set<(snapshot: JobsSnapshot) => void>();
   private libraryListeners = new Set<() => void>();
+  private retryTimers = new Map<number, { timer: NodeJS.Timeout; message: string }>();
   private pumping = false;
   private started = false;
   private stopping = false;
@@ -247,6 +248,7 @@ class DownloadManager {
     const job = jobsRepo.getJob(id);
     if (!job) return;
     if (job.status !== 'paused' && job.status !== 'failed' && job.status !== 'canceled') return;
+    this.clearRetryTimer(id);
     jobsRepo.updateJob(id, {
       status: 'queued',
       errorCode: null,
@@ -259,6 +261,7 @@ class DownloadManager {
 
   /** 暂停所有排队与正在下载的任务；后处理中的任务短暂且不可中断，让其完成。 */
   pauseAll(): number {
+    for (const id of [...this.retryTimers.keys()]) this.clearRetryTimer(id);
     let paused = jobsRepo.pauseQueuedJobs();
     for (const id of jobsRepo.listRunningJobIds()) {
       const job = jobsRepo.getJob(id);
@@ -281,9 +284,21 @@ class DownloadManager {
     return resumed;
   }
 
+  /** 一键重试全部失败任务（含等待自动重试的），常用于 CDN 抖动 / 改代理后重来一遍。 */
+  retryAllFailed(): number {
+    for (const id of [...this.retryTimers.keys()]) this.clearRetryTimer(id, false);
+    const retried = jobsRepo.requeueFailedJobs();
+    if (retried > 0) {
+      this.emit();
+      this.pump();
+    }
+    return retried;
+  }
+
   cancel(id: number): void {
     const job = jobsRepo.getJob(id);
     if (!job) return;
+    this.clearRetryTimer(id);
     this.intents.set(id, 'cancel');
     const child = this.children.get(id);
     if (child) {
@@ -297,6 +312,7 @@ class DownloadManager {
   retry(id: number): void {
     const job = jobsRepo.getJob(id);
     if (!job) return;
+    this.clearRetryTimer(id);
     jobsRepo.updateJob(id, {
       status: 'queued',
       attempts: 0,
@@ -313,9 +329,73 @@ class DownloadManager {
     this.emit();
   }
 
+  /**
+   * 取消排队中的自动重试。`restore` 为 true 时把任务说明还原成原始错误，
+   * 避免任务列表里一直显示「将在 N 秒后重试」。
+   */
+  private clearRetryTimer(id: number, restore = true): void {
+    const pending = this.retryTimers.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.retryTimers.delete(id);
+    if (restore) {
+      try {
+        jobsRepo.updateJob(id, { errorMessage: pending.message.slice(0, 500) });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /**
+   * 网络类失败自动重试。mcdn 超时、HTTP 424、断流基本都是「这一次的连接/节点不行」，
+   * 重新跑一次 yt-dlp 会重新解析出新的 CDN 地址，成功率很高。
+   * 412 风控 / 会员无权限 / 已下架 / 磁盘满不重试，避免越试越糟。
+   */
+  private scheduleAutoRetry(
+    job: JobRow,
+    stagingDir: string,
+    code: string,
+    message: string
+  ): boolean {
+    const limit = getSettings().downloadAutoRetry;
+    const attempts = job.attempts ?? 0;
+    if (!shouldAutoRetry(code, attempts, limit)) return false;
+
+    const next = attempts + 1;
+    const delay = 5000 * next;
+    // 半截文件会让下一轮把它当作可续传的 .part，先清掉更保险
+    cleanupPartials(stagingDir);
+    jobsRepo.updateJob(job.id, {
+      status: 'failed',
+      attempts: next,
+      errorCode: code,
+      errorMessage: `第 ${next}/${limit} 次自动重试将在 ${Math.round(delay / 1000)} 秒后开始：${message}`.slice(0, 500),
+      speed: null,
+      eta: null,
+      finishedAt: null
+    });
+    this.emit();
+
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(job.id);
+      const current = jobsRepo.getJob(job.id);
+      // 用户中途手动取消/暂停/重试过就不要自动排队了
+      if (!current || current.status !== 'failed' || current.attempts !== next) return;
+      jobsRepo.updateJob(job.id, { status: 'queued', progress: 0, errorCode: null, errorMessage: null });
+      this.emit();
+      this.pump();
+    }, delay);
+    timer.unref?.();
+    this.retryTimers.set(job.id, { timer, message });
+    return true;
+  }
+
   /** 退出前调用：终止子进程并把运行中的任务标记为暂停，避免留下孤儿 yt-dlp。 */
   shutdown(): void {
     this.stopping = true;
+    for (const { timer } of this.retryTimers.values()) clearTimeout(timer);
+    this.retryTimers.clear();
     for (const [id, child] of this.children) {
       try {
         child.kill();
@@ -384,6 +464,7 @@ class DownloadManager {
         quality: job.quality,
         preferHighestBitrate: Boolean(job.upgrade_video_id),
         cookiesFile,
+        proxy: getSettings().downloadProxy,
         onProgress: (progress) => {
           const ratio = progress.total > 0 ? progress.downloaded / progress.total : 0;
           const timestamp = Date.now();
@@ -420,8 +501,14 @@ class DownloadManager {
 
       if (outcome.code !== 0) {
         const mapped = mapYtdlpError(outcome.stderr);
-        jobsRepo.markFailed(job.id, mapped.code, mapped.message);
-        log.warn('[downloads] failed', job.id, mapped.code, mapped.message);
+        // 会员/付费/充电专属：把清单条目标成「充电专属」，避免反复重试
+        if (mapped.code === 'FORBIDDEN' && job.remote_item_id) {
+          run("UPDATE remote_items SET state = 'paid' WHERE id = ? AND state = 'available'", [job.remote_item_id]);
+        }
+        // 网络类失败（mcdn 超时 / 424 / 断流）绝大多数重试一次就好，且重试会重新解析出新的 CDN 地址
+        const retried = this.scheduleAutoRetry(job, stagingDir, mapped.code, mapped.message);
+        if (!retried) jobsRepo.markFailed(job.id, mapped.code, mapped.message);
+        log.warn('[downloads] failed', job.id, mapped.code, mapped.message, retried ? '(auto retry scheduled)' : '');
         this.emit();
         return;
       }

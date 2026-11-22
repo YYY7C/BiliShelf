@@ -16,6 +16,7 @@ export interface LibraryPaths {
   aiCache: string;
   backups: string;
   logs: string;
+  screenshots: string;
 }
 
 export function libraryPaths(rootOverride?: string): LibraryPaths {
@@ -30,7 +31,8 @@ export function libraryPaths(rootOverride?: string): LibraryPaths {
     temp: path.join(root, 'cache', 'temp'),
     aiCache: path.join(root, 'cache', 'ai'),
     backups: path.join(root, 'backups'),
-    logs: path.join(root, 'logs')
+    logs: path.join(root, 'logs'),
+    screenshots: path.join(root, 'screenshots')
   };
 }
 
@@ -44,7 +46,8 @@ export function ensureLibraryDirs(paths = libraryPaths()): LibraryPaths {
     paths.temp,
     paths.aiCache,
     paths.backups,
-    paths.logs
+    paths.logs,
+    paths.screenshots
   ]) {
     fs.mkdirSync(dir, { recursive: true });
   }

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import log from 'electron-log/main';
-import type { AiTagRef, ImportResult, VideoItem } from '@shared/types';
+import type { AiTagRef, ImportResult } from '@shared/types';
 import {
   ensureLibraryDirs,
   fromLibraryRelative,
@@ -24,7 +24,7 @@ import {
   updateVideo
 } from '../db/videos';
 import { getAiTaggedAt, getApprovedAiTags, restoreApprovedAiTag } from '../db/ai';
-import { all, one } from '../db/index';
+import { one } from '../db/index';
 import { makeThumbnail, makePreview, probeMedia } from './media';
 
 export const VIDEO_EXTENSIONS = new Set([
@@ -235,14 +235,6 @@ export interface SidecarFile {
   exportedAt: string;
 }
 
-export function sidecarPathFor(video: VideoItem): string | null {
-  if (!video.videoUrl) return null;
-  const row = getVideoRow(video.id);
-  if (!row?.file_path) return null;
-  const paths = libraryPaths();
-  return path.join(path.dirname(fromLibraryRelative(paths.root, row.file_path)), 'metadata.json');
-}
-
 export async function writeSidecar(videoId: number): Promise<void> {
   const video = getVideo(videoId);
   const row = getVideoRow(videoId);
@@ -391,8 +383,3 @@ export function videoAbsolutePath(videoId: number): string | null {
   return fromLibraryRelative(libraryPaths().root, row.file_path);
 }
 
-export function listMissingVideos(): Array<{ id: number; title: string }> {
-  return all<{ id: number; title: string }>(
-    "SELECT id, title FROM videos WHERE status = 'present' AND file_path IS NOT NULL"
-  );
-}

@@ -18,6 +18,9 @@ import type {
   AiProviderTestResult,
   AiQueueSnapshot,
   AiReviewCounts,
+  AiReviewAudit,
+  AiBulkReviewInput,
+  AiBulkReviewResult,
   AiReviewDecision,
   AiReviewItem,
   AiReviewPage,
@@ -54,9 +57,15 @@ import type {
   QualityScanResult,
   RemoteItemsQuery,
   RemoteItemsResult,
+  RescuePlan,
+  RescueListItem,
+  RescueSearchResult,
+  ScreenshotInput,
+  ScreenshotResult,
   SmartCollection,
   SourceKind,
   SourcePatch,
+  SourcePreview,
   SourceSummary,
   SyncProgress,
   TagSummary,
@@ -66,6 +75,7 @@ import type {
   UpdateVideoPatch,
   VideoItem
 } from './types';
+import type { AiQualityConfig } from './aiQuality';
 
 /** 所有 IPC 通道名集中在此，避免字符串散落。 */
 export const IPC = {
@@ -111,6 +121,12 @@ export const IPC = {
 
   sourcesList: 'sources:list',
   sourcesAdd: 'sources:add',
+  sourcesPreview: 'sources:preview',
+  sourcesRescuePlan: 'sources:rescue-plan',
+  sourcesRescueSearch: 'sources:rescue-search',
+  sourcesRescueTitles: 'sources:rescue-titles',
+  sourcesRescueList: 'sources:rescue-list',
+  sourcesRescueRepair: 'sources:rescue-repair',
   sourcesUpdate: 'sources:update',
   sourcesRemove: 'sources:remove',
   sourcesSync: 'sources:sync',
@@ -126,6 +142,7 @@ export const IPC = {
   jobsResume: 'jobs:resume',
   jobsPauseAll: 'jobs:pause-all',
   jobsResumeAll: 'jobs:resume-all',
+  jobsRetryAllFailed: 'jobs:retry-all-failed',
   jobsCancel: 'jobs:cancel',
   jobsRetry: 'jobs:retry',
   jobsClear: 'jobs:clear',
@@ -153,6 +170,7 @@ export const IPC = {
   authLogout: 'auth:logout',
 
   playerProgress: 'player:progress',
+  playerScreenshot: 'player:screenshot',
 
   aiProvidersList: 'ai:providers:list',
   aiProvidersSave: 'ai:providers:save',
@@ -188,6 +206,8 @@ export const IPC = {
   aiReviewCounts: 'ai:review:counts',
   aiReviewApprove: 'ai:review:approve',
   aiReviewReject: 'ai:review:reject',
+  aiReviewAudit: 'ai:review:audit',
+  aiReviewBulk: 'ai:review:bulk',
   aiReviewUpdateTag: 'ai:review:update-tag',
   aiReviewAddTag: 'ai:review:add-tag',
   aiReviewRemoveTag: 'ai:review:remove-tag',
@@ -196,6 +216,7 @@ export const IPC = {
 
   aiTagsList: 'ai:tags:list',
   aiStats: 'ai:stats',
+  aiQualityRules: 'ai:quality-rules',
 
   aiAnalysisEstimate: 'ai:analysis:estimate',
   aiAnalysisRun: 'ai:analysis:run',
@@ -216,8 +237,6 @@ export const IPC = {
   eventToast: 'event:toast',
   eventAuth: 'event:auth'
 } as const;
-
-export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 
 /** 渲染进程可用的 API（由 preload 暴露到 window.bilishelf）。 */
 export interface BilishelfApi {
@@ -275,15 +294,55 @@ export interface BilishelfApi {
   sources: {
     list(): Promise<SourceSummary[]>;
     add(input: {
-      kind: SourceKind;
+      kind: SourceKind | 'auto';
       url?: string;
       remoteId?: string;
       title?: string;
+      minDuration?: number | null;
+      maxDuration?: number | null;
     }): Promise<SourceSummary[]>;
+    preview(input: {
+      url?: string;
+      remoteId?: string;
+      minDuration?: number | null;
+      maxDuration?: number | null;
+    }): Promise<SourcePreview>;
+    /** P0 只读：复核失效条目并在 Internet Archive 上找候选，不写库、不下载 */
+    rescuePlan(input: {
+      sourceId?: number | null;
+      remoteItemIds?: number[];
+      limit?: number;
+      verifyTop?: number;
+    }): Promise<RescuePlan>;
+    /** 对单个 BV 手动检索存档候选（不依赖清单条目） */
+    rescueSearch(input: {
+      bvid: string;
+      title?: string | null;
+      duration?: number | null;
+      upName?: string | null;
+      verifyTop?: number;
+    }): Promise<RescueSearchResult>;
+    /** 用观看历史恢复失效条目的真实标题（收藏夹接口只给「已失效视频」） */
+    rescueTitles(input: { sourceId?: number | null; bvids?: string[] }): Promise<{
+      scanned: number;
+      pages: number;
+      found: Array<{ bvid: string; title: string; upName: string | null }>;
+      errors: string[];
+    }>;
+    /** 失效 / 已补档清单（跨来源） */
+    rescueList(): Promise<RescueListItem[]>;
+    /** 把「B 站失效但本地已有副本」的条目修成 rescued，返回修复条数 */
+    rescueRepair(): Promise<number>;
     update(id: number, patch: SourcePatch): Promise<SourceSummary[]>;
     remove(id: number): Promise<SourceSummary[]>;
-    sync(id: number): Promise<{ added: number; updated: number; unavailable: number }>;
-    syncAll(): Promise<{ added: number; updated: number; unavailable: number; failed: number }>;
+    sync(id: number): Promise<{ added: number; updated: number; unavailable: number; filtered: number }>;
+    syncAll(): Promise<{
+      added: number;
+      updated: number;
+      unavailable: number;
+      filtered: number;
+      failed: number;
+    }>;
     items(query: RemoteItemsQuery): Promise<RemoteItemsResult>;
     enqueue(remoteItemIds: number[], quality?: QualityPreset): Promise<{ queued: number; skipped: number }>;
     enqueueAll(input: {
@@ -299,6 +358,7 @@ export interface BilishelfApi {
     resume(id: number): Promise<void>;
     pauseAll(): Promise<number>;
     resumeAll(): Promise<number>;
+    retryAllFailed(): Promise<number>;
     cancel(id: number): Promise<void>;
     retry(id: number): Promise<void>;
     clear(): Promise<void>;
@@ -370,6 +430,10 @@ export interface BilishelfApi {
       counts(): Promise<AiReviewCounts>;
       approve(input: AiReviewDecision): Promise<AiReviewResult>;
       reject(input: AiReviewDecision): Promise<AiReviewResult>;
+      /** 标签质量审计：按问题类型统计命中条目数 */
+      audit(query?: AiReviewQuery): Promise<AiReviewAudit>;
+      /** 按筛选条件批量通过/拒绝（onlyClean 跳过矛盾条目） */
+      bulk(input: AiBulkReviewInput): Promise<AiBulkReviewResult>;
       updateTag(input: AiReviewTagPatch): Promise<AiReviewItem | null>;
       addTag(input: AiReviewTagAdd): Promise<AiReviewItem | null>;
       removeTag(input: AiReviewTagRemove): Promise<AiReviewItem | null>;
@@ -377,6 +441,8 @@ export interface BilishelfApi {
       unapprove(input: AiReviewUnapproveInput): Promise<AiReviewResult>;
       onChanged(cb: () => void): () => void;
     };
+    /** 素材库本地的质量规则（ai-quality.json），用于审核页打问题徽标 */
+    qualityRules(): Promise<AiQualityConfig>;
     tags: {
       list(): Promise<AiTagSummary[]>;
     };
@@ -395,6 +461,8 @@ export interface BilishelfApi {
   };
   player: {
     progress(id: number, position: number): Promise<void>;
+    /** 导出当前时间点的原始分辨率截图（PNG） */
+    screenshot(input: ScreenshotInput): Promise<ScreenshotResult>;
   };
   events: {
     onJobs(cb: (snapshot: JobsSnapshot) => void): () => void;

@@ -5,7 +5,8 @@ import type {
   AiModelProbeResult,
   AiProviderInput,
   AiProviderSummary,
-  AiProviderTestResult
+  AiProviderTestResult,
+  AiReasoningEffort
 } from '@shared/types';
 import { getProviderRuntime, type ProviderRuntime } from './config';
 import {
@@ -50,6 +51,8 @@ export interface AiChatRequest {
   maxTokens: number;
   jsonMode: boolean;
   imageDetail: AiImageDetail;
+  /** 思考强度；default / 未设置时不向网关传参 */
+  reasoningEffort?: AiReasoningEffort;
   timeoutMs: number;
   signal?: AbortSignal;
 }
@@ -270,7 +273,12 @@ function getByPath(value: unknown, path: string): unknown {
 class OpenAiAdapter implements AiProviderAdapter {
   constructor(private readonly runtime: ProviderRuntime) {}
 
-  private async call(request: AiChatRequest, useMaxCompletionTokens: boolean, includeJsonMode: boolean) {
+  private async call(
+    request: AiChatRequest,
+    useMaxCompletionTokens: boolean,
+    includeJsonMode: boolean,
+    includeReasoning = true
+  ) {
     const { summary, apiKey } = this.runtime;
     const body: Record<string, unknown> = {
       model: summary.model,
@@ -281,6 +289,9 @@ class OpenAiAdapter implements AiProviderAdapter {
     if (useMaxCompletionTokens) {
       delete body.max_tokens;
       body.max_completion_tokens = request.maxTokens;
+    }
+    if (includeReasoning) {
+      Object.assign(body, reasoningEffortParam(request.reasoningEffort, summary.model));
     }
     if (includeJsonMode && request.jsonMode) {
       body.response_format = { type: 'json_object' };
@@ -317,6 +328,10 @@ class OpenAiAdapter implements AiProviderAdapter {
         result = await this.call(request, true, true);
       } else if (/response_format|json_object/i.test(message)) {
         result = await this.call(request, false, false);
+      } else if (/reasoning_effort|reasoning|thinking/i.test(message)) {
+        // 网关不支持思考强度参数时降级重试，不要让整批打标陪着失败
+        console.warn('[ai] 网关不接受 reasoning_effort，已改用模型默认行为');
+        result = await this.call(request, false, true, false);
       }
     }
     assertOk(result, '模型请求失败');
@@ -445,6 +460,22 @@ class AnthropicAdapter implements AiProviderAdapter {
   constructor(private readonly runtime: ProviderRuntime) {}
 
   async chat(request: AiChatRequest): Promise<AiChatResponse> {
+    let result = await this.call(request, true);
+    if (
+      !result.ok &&
+      (result.status === 400 || result.status === 422) &&
+      request.reasoningEffort &&
+      request.reasoningEffort !== 'default'
+    ) {
+      // Anthropic 的 thinking 要求 max_tokens > budget_tokens 且 temperature=1，
+      // 条件不满足时退回普通请求，不让整条打标失败
+      result = await this.call(request, false);
+    }
+    assertOk(result, 'Anthropic 请求失败');
+    return parseAnthropicResponse(result.json);
+  }
+
+  private async call(request: AiChatRequest, withThinking: boolean) {
     const { summary, apiKey } = this.runtime;
     const body: Record<string, unknown> = {
       model: summary.model,
@@ -453,6 +484,11 @@ class AnthropicAdapter implements AiProviderAdapter {
       max_tokens: request.maxTokens,
       temperature: request.temperature
     };
+    const budget = withThinking ? thinkingBudget(request.reasoningEffort, request.maxTokens) : null;
+    if (budget) {
+      body.thinking = { type: 'enabled', budget_tokens: budget };
+      delete body.temperature;
+    }
     if (request.tools && request.tools.length > 0 && summary.capabilities.tools) {
       body.tools = request.tools.map((tool) => ({
         name: tool.name,
@@ -460,7 +496,7 @@ class AnthropicAdapter implements AiProviderAdapter {
         input_schema: tool.parameters
       }));
     }
-    const result = await requestJson(
+    return requestJson(
       anthropicEndpoint(summary.baseUrl),
       {
         method: 'POST',
@@ -473,9 +509,33 @@ class AnthropicAdapter implements AiProviderAdapter {
       request.timeoutMs,
       request.signal
     );
-    assertOk(result, 'Anthropic 请求失败');
-    return parseAnthropicResponse(result.json);
   }
+}
+
+/**
+ * DeepSeek 系模型（OpenCode Go 的 deepseek-*）走的是「thinking 开关 + reasoning_effort」两个字段，
+ * 依据网关 /models 自带的 thinkingLevelMap：low / high / max 三档，其余档位不可用。
+ * 其它 OpenAI 兼容网关只发 reasoning_effort，max 降级成 high。
+ */
+export function reasoningEffortParam(
+  effort?: AiReasoningEffort,
+  model?: string
+): Record<string, unknown> {
+  if (!effort || effort === 'default') return {};
+  const deepseek = /deepseek/i.test(model ?? '');
+  const wire = effort === 'medium' ? 'high' : effort === 'max' && !deepseek ? 'high' : effort;
+  return deepseek
+    ? { thinking: { type: 'enabled' }, reasoning_effort: wire }
+    : { reasoning_effort: wire };
+}
+
+/** 思考预算：至少要给正文留 1024 tokens，否则 Anthropic 会直接报错 */
+function thinkingBudget(effort: AiReasoningEffort | undefined, maxTokens: number): number | null {
+  if (!effort || effort === 'default') return null;
+  const wanted = effort === 'max' ? 16384 : effort === 'high' ? 8192 : effort === 'medium' ? 4096 : 2048;
+  const room = Math.floor(maxTokens / 2);
+  if (room < 1024) return null;
+  return Math.min(wanted, room);
 }
 
 function buildAnthropicMessages(request: AiChatRequest): unknown[] {
@@ -576,14 +636,30 @@ class GeminiAdapter implements AiProviderAdapter {
   constructor(private readonly runtime: ProviderRuntime) {}
 
   async chat(request: AiChatRequest): Promise<AiChatResponse> {
+    let result = await this.call(request, true);
+    if (
+      !result.ok &&
+      (result.status === 400 || result.status === 422) &&
+      request.reasoningEffort &&
+      request.reasoningEffort !== 'default'
+    ) {
+      result = await this.call(request, false);
+    }
+    assertOk(result, 'Gemini 请求失败');
+    return parseGeminiResponse(result.json);
+  }
+
+  private async call(request: AiChatRequest, withThinking: boolean) {
     const { summary, apiKey } = this.runtime;
+    const budget = withThinking ? thinkingBudget(request.reasoningEffort, request.maxTokens) : null;
     const body: Record<string, unknown> = {
       systemInstruction: { parts: [{ text: request.system }] },
       contents: buildGeminiContents(request),
       generationConfig: {
         temperature: request.temperature,
         maxOutputTokens: request.maxTokens,
-        ...(request.jsonMode ? { responseMimeType: 'application/json' } : {})
+        ...(request.jsonMode ? { responseMimeType: 'application/json' } : {}),
+        ...(budget ? { thinkingConfig: { thinkingBudget: budget, includeThoughts: false } } : {})
       }
     };
     if (request.tools && request.tools.length > 0 && summary.capabilities.tools) {
@@ -597,9 +673,8 @@ class GeminiAdapter implements AiProviderAdapter {
         }
       ];
     }
-    const url = `${geminiEndpoint(summary.baseUrl, summary.model)}?key=${encodeURIComponent(apiKey)}`;
-    const result = await requestJson(
-      url,
+    return requestJson(
+      `${geminiEndpoint(summary.baseUrl, summary.model)}?key=${encodeURIComponent(apiKey)}`,
       {
         method: 'POST',
         headers: headersFor(this.runtime),
@@ -608,8 +683,6 @@ class GeminiAdapter implements AiProviderAdapter {
       request.timeoutMs,
       request.signal
     );
-    assertOk(result, 'Gemini 请求失败');
-    return parseGeminiResponse(result.json);
   }
 }
 
@@ -798,11 +871,6 @@ export function createAdapter(runtime: ProviderRuntime): AiProviderAdapter {
   if (summary.protocol === 'anthropic') return new AnthropicAdapter(runtime);
   if (summary.protocol === 'gemini') return new GeminiAdapter(runtime);
   return new OpenAiAdapter(runtime);
-}
-
-export function adapterForProvider(id?: string | null): AiProviderAdapter | null {
-  const runtime = getProviderRuntime(id);
-  return runtime ? createAdapter(runtime) : null;
 }
 
 /* ------------------------------- test connection --------------------------- */

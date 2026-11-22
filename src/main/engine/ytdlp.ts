@@ -15,12 +15,16 @@ export interface DownloadProgress {
   eta: number;
 }
 
+export type DownloadProxyMode = 'system' | 'direct';
+
 export interface DownloadOptions {
   url: string;
   outputDir: string;
   quality: QualityPreset;
   preferHighestBitrate?: boolean;
   cookiesFile?: string | null;
+  /** direct 时强制绕过系统代理；B 站 mcdn 节点走代理会超时/断流 */
+  proxy?: DownloadProxyMode;
   onProgress?: (progress: DownloadProgress) => void;
   onLog?: (line: string) => void;
 }
@@ -32,6 +36,11 @@ export interface DownloadOutcome {
 }
 
 const PROGRESS_PREFIX = 'BS_PROGRESS|';
+
+/** `--proxy=`（空值）是 yt-dlp 关闭代理的写法；PowerShell 会把空参数吃掉，所以必须用等号形式。 */
+function proxyArgs(mode: DownloadProxyMode | undefined): string[] {
+  return mode === 'direct' ? ['--proxy='] : [];
+}
 
 /**
  * 部分 CDN 边缘节点会拒绝非浏览器 UA，并对「单次长连接整文件下载」返回 567；
@@ -49,7 +58,11 @@ export interface FormatProbe {
 }
 
 /** 只解析元数据，不下载；用于画质升级检查。 */
-export function probeFormats(url: string, cookiesFile?: string | null): Promise<FormatProbe[]> {
+export function probeFormats(
+  url: string,
+  cookiesFile?: string | null,
+  proxy?: DownloadProxyMode
+): Promise<FormatProbe[]> {
   const tool = requireTool('ytdlp');
   const args = [
     '--no-warnings',
@@ -57,7 +70,8 @@ export function probeFormats(url: string, cookiesFile?: string | null): Promise<
     '--skip-download',
     '--dump-single-json',
     '--user-agent',
-    BROWSER_UA
+    BROWSER_UA,
+    ...proxyArgs(proxy)
   ];
   if (cookiesFile) args.push('--cookies', cookiesFile);
   args.push('--', url);
@@ -118,6 +132,7 @@ function buildArgs(options: DownloadOptions): string[] {
     '--no-warnings',
     '--user-agent',
     BROWSER_UA,
+    ...proxyArgs(options.proxy),
     '--http-chunk-size',
     '1M',
     '--retries',
@@ -248,7 +263,11 @@ export interface YtEntry {
   cid?: number | null;
 }
 
-export async function listFlatPlaylist(url: string, cookiesFile?: string | null): Promise<YtEntry[]> {
+export async function listFlatPlaylist(
+  url: string,
+  cookiesFile?: string | null,
+  proxy?: DownloadProxyMode
+): Promise<YtEntry[]> {
   const tool = requireTool('ytdlp');
   const args = [
     '-J',
@@ -260,7 +279,8 @@ export async function listFlatPlaylist(url: string, cookiesFile?: string | null)
     '--user-agent',
     BROWSER_UA,
     '--http-chunk-size',
-    '1M'
+    '1M',
+    ...proxyArgs(proxy)
   ];
   if (cookiesFile) args.push('--cookies', cookiesFile);
   args.push('--', url);

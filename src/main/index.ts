@@ -4,13 +4,13 @@ import path from 'node:path';
 import log from 'electron-log/main';
 import type { JobStatusCounts } from '@shared/types';
 import { closeDatabase, openDatabase } from './db/index';
-import { recoverInterruptedSyncRuns } from './db/sources';
+import { recoverInterruptedSyncRuns, repairRescuedItems } from './db/sources';
 import { reconcileFileStatus } from './db/videos';
 import { registerAppProtocol, registerPrivilegedSchemes } from './protocol';
 import { broadcastLibrary, registerIpc } from './ipc';
 import { downloadManager } from './services/downloads';
 import { aiTaggingManager } from './services/ai/tagging';
-import { biliSession, configureBiliSession, getAuthStatus } from './services/auth';
+import { configureBiliSession } from './services/auth';
 import { engineStatusAsync } from './engine/tools';
 import { ensureLibraryDirs, fromLibraryRelative, libraryPaths } from './paths';
 import { getSettings } from './store';
@@ -255,6 +255,9 @@ if (!gotLock) {
       openDatabase();
       const interruptedSyncs = recoverInterruptedSyncRuns();
       if (interruptedSyncs > 0) log.info('[app] recovered interrupted sync runs', interruptedSyncs);
+      // 启动时先修一遍「B 站失效但本地有副本」的条目，它们不该继续挂在失效列表里
+      const repairedItems = repairRescuedItems();
+      if (repairedItems > 0) log.info('[app] repaired rescued items', repairedItems);
       // 日志写进素材库目录，和「设置 → 打开日志目录」保持一致
       log.transports.file.resolvePathFn = () => path.join(libraryPaths().logs, 'main.log');
     } catch (error) {
@@ -316,31 +319,6 @@ if (!gotLock) {
     setTimeout(() => {
       void engineStatusAsync(true).then((status) => log.info('[app] engine ready =', status.ready));
     }, 1200);
-
-    // 临时调试：打印收藏夹接口原始响应（仅未打包时）
-    const debugFav = process.env['BILISHELF_DEBUG_FAV'];
-    if (debugFav && !app.isPackaged) {
-      setTimeout(() => {
-        void (async () => {
-          try {
-            const status = await getAuthStatus();
-            log.info('[debug] auth', JSON.stringify({ loggedIn: status.loggedIn, mid: status.mid }));
-            const mid = status.mid ?? Number(debugFav);
-            const headers = { Referer: 'https://www.bilibili.com/' };
-            const response = await biliSession().fetch(
-              `https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid=${mid}&jsonp=jsonp`,
-              { headers }
-            );
-            const body = await response.text();
-            log.info(`[debug] fav -> http ${response.status} ${body.slice(0, 400)}`);
-          } catch (error) {
-            log.warn('[debug] fav failed', error);
-          } finally {
-            app.quit();
-          }
-        })();
-      }, 2600);
-    }
 
     // 延迟校验文件是否还在（搬移/删除后标记为「文件缺失」）
     setTimeout(() => {

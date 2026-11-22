@@ -1,64 +1,70 @@
-import { describe, expect, it } from 'vitest';
-import { canonicalCategoryName, parseAnalysis, pruneMergedAnalysis, sanitizeAnalysis } from './analysisParse';
+import { beforeEach, describe, expect, it } from 'vitest';
+import type { CategoryRule } from '@shared/aiQuality';
+import {
+  canonicalCategoryName,
+  parseAnalysis,
+  pruneMergedAnalysis,
+  sanitizeAnalysis,
+  setCategoryRules
+} from './analysisParse';
+
+// 真实词表存在素材库的 ai-quality.json（不进仓库），测试用合成规则
+const RULES: CategoryRule[] = [
+  { any: ['甲一', '甲二'], canonical: '甲桶' },
+  { any: ['乙一'], canonical: '乙桶' }
+];
+
+beforeEach(() => setCategoryRules(RULES));
 
 describe('canonicalCategoryName', () => {
   it('把同义分类归一到固定桶', () => {
-    expect(canonicalCategoryName('人物与气质')).toBe('人物');
-    expect(canonicalCategoryName('人物气质')).toBe('人物');
-    expect(canonicalCategoryName('角色人设与二次元关联')).toBe('IP与角色');
-    expect(canonicalCategoryName('服饰与造型')).toBe('服饰造型');
-    expect(canonicalCategoryName('场景与拍摄')).toBe('场景与拍摄');
-    expect(canonicalCategoryName('情绪与氛围')).toBe('情绪风格');
-    expect(canonicalCategoryName('曲目/BGM与IP')).toBe('IP与角色');
-  });
-
-  it('美食类库也有自己的归一桶', () => {
-    expect(canonicalCategoryName('菜系')).toBe('菜系与做法');
-    expect(canonicalCategoryName('烹饪方法')).toBe('菜系与做法');
-  });
-
-  it('鞋袜/身体细节归到服饰造型，避免同义拆分', () => {
-    expect(canonicalCategoryName('鞋袜与身体细节')).toBe('服饰造型');
-    expect(canonicalCategoryName('鞋袜与腿部细节')).toBe('服饰造型');
-    expect(canonicalCategoryName('服饰造型')).toBe('服饰造型');
+    expect(canonicalCategoryName('甲一与气质')).toBe('甲桶');
+    expect(canonicalCategoryName('甲二')).toBe('甲桶');
+    expect(canonicalCategoryName('乙一分类')).toBe('乙桶');
+    expect(canonicalCategoryName('甲桶')).toBe('甲桶');
   });
 
   it('匹配不到的领域保持原样', () => {
-    expect(canonicalCategoryName('动画参考')).toBe('动画参考');
+    expect(canonicalCategoryName('丙参考')).toBe('丙参考');
     expect(canonicalCategoryName('软件教程')).toBe('软件教程');
+  });
+
+  it('没有配置规则时不做归一', () => {
+    setCategoryRules([]);
+    expect(canonicalCategoryName('甲一')).toBe('甲一');
   });
 
   it('多轮结果归一后能正确合并', () => {
     const merged = sanitizeAnalysis({
       categories: [
-        { name: '人物与气质', tags: ['甜妹'] },
-        { name: '人物气质', tags: ['御姐'] }
+        { name: '甲一', tags: ['标签丁'] },
+        { name: '甲二', tags: ['标签申'] }
       ]
     });
 
-    expect(merged.categories.map((category) => category.name)).toEqual(['人物', '人物']);
+    expect(merged.categories.map((category) => category.name)).toEqual(['甲桶', '甲桶']);
   });
 });
 
 describe('sanitizeAnalysis', () => {
   // 视觉阶段实测会返回 "aliases": ["某UP名"]，严格 schema 会直接让整轮分析失败
   it('别名写成数组时退化为空表而不是报错', () => {
-    expect(sanitizeAnalysis({ aliases: ['某UP名', '双马尾'] }).aliases).toEqual({});
+    expect(sanitizeAnalysis({ aliases: ['某UP名', '标签甲'] }).aliases).toEqual({});
 
-    expect(sanitizeAnalysis({ aliases: [{ from: 'JK', to: 'JK制服' }] }).aliases).toEqual({ JK: 'JK制服' });
+    expect(sanitizeAnalysis({ aliases: [{ from: 'AB', to: '标签乙' }] }).aliases).toEqual({ AB: '标签乙' });
 
-    expect(sanitizeAnalysis({ aliases: { jk: 'JK制服' } }).aliases).toEqual({ jk: 'JK制服' });
+    expect(sanitizeAnalysis({ aliases: { jk: '标签乙' } }).aliases).toEqual({ jk: '标签乙' });
   });
 
   it('coverage 支持字符串与百分数，标签支持对象数组', () => {
     const result = sanitizeAnalysis({
       categories: [
-        { name: '人物', description: '出镜人物', tags: [{ name: '长发' }, '双马尾'], coverage: '80%' }
+        { name: '人物', description: '出镜人物', tags: [{ name: '长发' }, '标签甲'], coverage: '80%' }
       ]
     });
 
     expect(result.categories).toEqual([
-      { name: '人物', description: '出镜人物', tags: ['长发', '双马尾'], coverage: 0.8 }
+      { name: '人物', description: '出镜人物', tags: ['长发', '标签甲'], coverage: 0.8 }
     ]);
   });
 
@@ -78,7 +84,7 @@ describe('sanitizeAnalysis', () => {
 
   // 关注点是「维度：具体看什么」的一句话，早年按 40 字截断会把后半段吃掉
   it('关注点保留完整描述', () => {
-    const long = '丝袜按材质/长度/颜色三轴分别标注：天鹅绒·油亮·渔网 / 连裤袜·过膝袜·短袜 / 黑丝·白丝·肉丝';
+    const long = '织物按材质/长度/颜色三轴分别标注：标签巳·标签午·标签未 / 标签子·标签丙·标签丑 / 标签寅·标签卯·标签辰';
     expect(sanitizeAnalysis({ focus: [long] }).focus).toEqual([long]);
   });
 });
@@ -120,19 +126,19 @@ describe('pruneMergedAnalysis', () => {
   it('关注点按前缀去重，保留描述更完整的一条', () => {
     const result = pruneMergedAnalysis({
       categories: [],
-      focus: ['人物形象', '人物形象：双马尾与甜妹气质', '服饰穿搭', '服饰穿搭：JK制服']
+      focus: ['人物形象', '人物形象：标签甲与标签丁气质', '服饰穿搭', '服饰穿搭：标签乙']
     });
 
-    expect(result.focus).toEqual(['人物形象：双马尾与甜妹气质', '服饰穿搭：JK制服']);
+    expect(result.focus).toEqual(['人物形象：标签甲与标签丁气质', '服饰穿搭：标签乙']);
   });
 
-  // 实测同一轮里会出现「鞋袜与身体细节 / 鞋袜与腿部细节」这类同名不同写法的分类
+  // 实测同一轮里会出现「A与B细节 / A与C细节」这类同名不同写法的分类
   it('同名分类合并成一条并合并标签', () => {
     const result = pruneMergedAnalysis({
       categories: [
-        { name: '服饰造型', description: '短描述', tags: ['JK'] },
-        { name: '人物', description: '', tags: ['甜妹'] },
-        { name: '服饰造型', description: '更完整的穿搭描述', tags: ['JK', '过膝袜'], coverage: 0.6 }
+        { name: '服饰造型', description: '短描述', tags: ['AB'] },
+        { name: '人物', description: '', tags: ['标签丁'] },
+        { name: '服饰造型', description: '更完整的穿搭描述', tags: ['AB', '标签丙'], coverage: 0.6 }
       ],
       focus: []
     });
@@ -141,7 +147,7 @@ describe('pruneMergedAnalysis', () => {
     expect(result.categories[0]).toEqual({
       name: '服饰造型',
       description: '更完整的穿搭描述',
-      tags: ['JK', '过膝袜'],
+      tags: ['AB', '标签丙'],
       coverage: 0.6
     });
   });

@@ -1,4 +1,5 @@
 import type { BilishelfApi } from '@shared/ipc';
+import { EMPTY_QUALITY_CONFIG } from '@shared/aiQuality';
 import type {
   AcrCloudSummary,
   AiAnalysisRun,
@@ -157,8 +158,14 @@ const demoSources: SourceSummary[] = [
     itemCount: 312,
     downloadedCount: 9,
     unavailableCount: 4,
+    paidCount: 2,
+    lastAdded: 6,
+    collectionType: null,
     lastSyncedAt: new Date(Date.now() - 3600_000 * 5).toISOString(),
     syncEnabled: true,
+    autoDownload: false,
+    minDuration: null,
+    maxDuration: null,
     note: '作画 MAD 与分镜参考，优先补齐 4K'
   },
   {
@@ -171,22 +178,34 @@ const demoSources: SourceSummary[] = [
     itemCount: 57,
     downloadedCount: 9,
     unavailableCount: 1,
+    paidCount: 0,
+    lastAdded: 0,
+    collectionType: null,
     lastSyncedAt: new Date(Date.now() - 3600_000 * 26).toISOString(),
     syncEnabled: true,
+    autoDownload: false,
+    minDuration: null,
+    maxDuration: null,
     note: null
   },
   {
     id: 3,
     kind: 'space',
-    remoteId: 'https://space.bilibili.com/12345/video',
+    remoteId: 'mid:12345',
     title: 'UP 12345',
     cover: svgCover('UP 12345', '#3c6b4e', '#1f3c5e'),
     ownerMid: 12345,
     itemCount: 88,
     downloadedCount: 0,
     unavailableCount: 0,
+    paidCount: 3,
+    lastAdded: 0,
+    collectionType: null,
     lastSyncedAt: null,
     syncEnabled: false,
+    autoDownload: false,
+    minDuration: 60,
+    maxDuration: 900,
     note: null
   }
 ];
@@ -210,6 +229,7 @@ function makeRemoteItems(): RemoteItem[] {
       state: index === 5 ? 'unavailable' : 'available',
       tags: TAG_POOL[index % TAG_POOL.length]!,
       downloadedVideoId: downloaded ? index + 1 : null,
+      downloadedElsewhere: downloaded && index % 2 === 0,
       jobStatus: null,
       width: downloaded ? 1920 : null,
       height: downloaded ? 1080 : null,
@@ -326,7 +346,7 @@ const demoAuth: AuthStatus = {
 };
 
 const demoSettings: AppSettings = {
-  libraryRoot: 'C:\\Users\\Demo\\bili-sync',
+  libraryRoot: 'C:\\BiliShelf\\library',
   defaultQuality: 'best',
   concurrency: 2,
   writeNfo: false,
@@ -342,6 +362,8 @@ const demoSettings: AppSettings = {
   closeToTray: true,
   ytdlpPath: '',
   ffmpegPath: '',
+  downloadProxy: 'direct',
+  downloadAutoRetry: 2,
   requestDelayMs: 600,
   aiFrameCount: 3,
   aiFrameWidth: 768,
@@ -350,6 +372,7 @@ const demoSettings: AppSettings = {
   aiRequestDelayMs: 300,
   aiTimeoutMs: 120000,
   aiMaxRetries: 2,
+  aiAutoRetry: 2,
   aiMaxToolRounds: 3,
   aiCacheDays: 30
 };
@@ -411,6 +434,7 @@ let demoProfiles: AiTagProfile[] = [
     language: 'zh-CN',
     useAcrcloud: true,
     useBilibiliTags: true,
+    allowExtraTags: false,
     createdAt: DEMO_NOW,
     updatedAt: DEMO_NOW
   }
@@ -450,8 +474,8 @@ function demoFrameSet(video: VideoItem): AiReviewItem['frames'] {
 
 function demoReviewItem(video: VideoItem, index: number): AiReviewItem {
   const definitions: Array<[string, string[]]> = [
-    ['人物', ['长发', '双马尾']],
-    ['服饰', ['JK制服', '过膝袜']],
+    ['人物', ['长发', '示例标签甲']],
+    ['服饰', ['示例标签乙', '示例标签丙']],
     ['动作', ['舞蹈']],
     ['BGM', ['《演示曲名》', '电子流行']]
   ];
@@ -515,10 +539,10 @@ localVideos = localVideos.map((video, index) => {
     return {
       ...video,
       aiTags: [
-        { name: 'JK制服', category: '服饰', confidence: 0.94, source: 'vision' as const },
+        { name: '示例标签乙', category: '服饰', confidence: 0.94, source: 'vision' as const },
         { name: '长发', category: '人物', confidence: 0.91, source: 'vision' as const }
       ],
-      aiSummary: '演示摘要：JK 制服人物参考。',
+      aiSummary: '演示摘要：示例标签参考。',
       aiLastRunAt: DEMO_NOW
     };
   }
@@ -578,7 +602,7 @@ function demoReviewStatus(item: AiReviewItem): AiReviewItem['reviewStatus'] {
   if (approved > 0 && rejected > 0) return 'partial';
   if (approved > 0) return 'approved';
   if (rejected > 0) return 'rejected';
-  return 'pending';
+  return 'superseded';
 }
 
 function demoReviewCounts(): { pending: number; approved: number; rejected: number } {
@@ -719,6 +743,7 @@ function demoProfileFromInput(input: AiTagProfileInput, id: number): AiTagProfil
     language: input.language,
     useAcrcloud: input.useAcrcloud,
     useBilibiliTags: input.useBilibiliTags,
+    allowExtraTags: input.allowExtraTags === true,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -939,17 +964,57 @@ export const demoApi: BilishelfApi = {
   sources: {
     list: () => delay(demoSources),
     add: () => delay(demoSources),
+    preview: async (input) => ({
+      target: `mid:${input.url ?? '12345'}`,
+      kind: 'space' as const,
+      title: '示例 UP 主',
+      cover: svgCover('示例 UP 主', '#3c6b4e', '#1f3c5e'),
+      ownerMid: 12345,
+      ownerName: '示例 UP 主',
+      itemCount: 88,
+      samples: ['示例稿件 A', '示例稿件 B', '示例稿件 C'],
+      warning: null,
+      url: 'https://space.bilibili.com/12345/video',
+      description: 'UP 投稿 · UID 12345'
+    }),
+    rescuePlan: async () => ({
+      rows: [],
+      summary: {
+        requested: 0,
+        local: 0,
+        alive: 0,
+        reviewing: 0,
+        paid: 0,
+        dead: 0,
+        private: 0,
+        unknown: 0,
+        withCandidate: 0,
+        sure: 0,
+        likely: 0,
+        doubt: 0,
+        paidSkipped: 0,
+        uniqueBvid: 0,
+        elapsedMs: 0
+      }
+    }),
+    rescueSearch: async () => ({ queries: 0, hits: 0, paidSkipped: 0, candidates: [] }),
+    rescueTitles: async () => ({ scanned: 0, pages: 0, found: [], errors: [] }),
+    rescueList: async () => [],
+    rescueRepair: async () => 0,
     update: (id, patch) => {
       const source = demoSources.find((item) => item.id === id);
       if (source) {
         if (patch.syncEnabled !== undefined) source.syncEnabled = patch.syncEnabled;
+        if (patch.autoDownload !== undefined) source.autoDownload = patch.autoDownload;
+        if (patch.minDuration !== undefined) source.minDuration = patch.minDuration;
+        if (patch.maxDuration !== undefined) source.maxDuration = patch.maxDuration;
         if (patch.note !== undefined) source.note = patch.note;
       }
       return delay([...demoSources]);
     },
     remove: () => delay(demoSources),
-    sync: () => delay({ added: 3, updated: 24, unavailable: 1 }),
-    syncAll: () => delay({ added: 3, updated: 24, unavailable: 1, failed: 0 }),
+    sync: () => delay({ added: 3, updated: 24, unavailable: 1, filtered: 2 }),
+    syncAll: () => delay({ added: 3, updated: 24, unavailable: 1, filtered: 2, failed: 0 }),
     items: (query) => {
       const needle = query.search?.trim().toLowerCase();
       const items = demoRemoteItems.filter(
@@ -1015,6 +1080,15 @@ export const demoApi: BilishelfApi = {
         if (job.status !== 'paused') return job;
         count += 1;
         return { ...job, status: 'queued' };
+      });
+      return count;
+    },
+    retryAllFailed: async () => {
+      let count = 0;
+      localJobs = localJobs.map((job) => {
+        if (job.status !== 'failed') return job;
+        count += 1;
+        return { ...job, status: 'queued', progress: 0 };
       });
       return count;
     },
@@ -1088,6 +1162,8 @@ export const demoApi: BilishelfApi = {
     logout: () => delay(demoAuth)
   },
   ai: {
+    // 演示模式没有素材库，质量规则视为未配置
+    qualityRules: () => delay({ ...EMPTY_QUALITY_CONFIG }),
     providers: {
       list: () => delay(demoProviders.map((provider) => ({ ...provider }))),
       save: (input) => {
@@ -1297,6 +1373,8 @@ export const demoApi: BilishelfApi = {
         else if (status === 'approved') items = items.filter((item) => item.reviewStatus === 'approved');
         else if (status === 'rejected') items = items.filter((item) => item.reviewStatus === 'rejected');
         else if (status === 'partial') items = items.filter((item) => item.reviewStatus === 'partial');
+        else if (status === 'superseded')
+          items = items.filter((item) => item.reviewStatus === 'superseded');
         if (query.videoId) items = items.filter((item) => item.videoId === query.videoId);
         if (query.search?.trim()) {
           const needle = query.search.trim().toLowerCase();
@@ -1366,6 +1444,17 @@ export const demoApi: BilishelfApi = {
           videoIds: Array.from(videoIds)
         });
       },
+      audit: () =>
+        delay({
+          runs: demoReviewItems.length,
+          pendingTags: demoReviewItems.reduce(
+            (sum, item) => sum + item.aiTags.filter((tag) => tag.status === 'pending').length,
+            0
+          ),
+          issues: {},
+          cleanRuns: demoReviewItems.length
+        }),
+      bulk: () => delay({ runs: 0, tags: 0, skipped: 0 }),
       updateTag: (patch) => {
         let updated: AiReviewItem | null = null;
         demoReviewItems = demoReviewItems.map((item) => {
@@ -1542,6 +1631,7 @@ export const demoApi: BilishelfApi = {
           language: 'zh-CN',
           useAcrcloud: true,
           useBilibiliTags: true,
+          allowExtraTags: false,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -1556,7 +1646,17 @@ export const demoApi: BilishelfApi = {
     }
   },
   player: {
-    progress: async () => undefined
+    progress: async () => undefined,
+    screenshot: async (input) =>
+      delay({
+        path: `screenshots/demo_${Math.floor(input.time)}.png`,
+        name: `demo_${Math.floor(input.time)}.png`,
+        relativePath: `screenshots/demo_${Math.floor(input.time)}.png`,
+        width: 1920,
+        height: 1080,
+        bytes: 1_800_000,
+        time: input.time
+      })
   },
   events: {
     onJobs: () => () => undefined,

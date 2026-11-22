@@ -1,11 +1,12 @@
 import clsx from 'clsx';
-import { Check, ListChecks, RefreshCw, Search, X } from 'lucide-react';
+import { AlertTriangle, Check, ListChecks, RefreshCw, Search, ShieldCheck, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { AiReviewCounts, AiReviewItem, AiTagProfile, SourceSummary } from '@shared/types';
+import type { AiReviewAudit, AiReviewCounts, AiReviewItem, AiTagProfile, SourceSummary } from '@shared/types';
+import { EMPTY_QUALITY_CONFIG, issueLabel, LOW_CONFIDENCE_KIND, type AiQualityConfig } from '@shared/aiQuality';
 import { api } from '../../lib/bridge';
 import { useUi } from '../../lib/store';
-import { Button, Select, Spinner, TextInput } from '../ui';
+import { Button, Modal, Select, Spinner, TextInput } from '../ui';
 import { AiReviewRow } from './AiReviewRow';
 
 type ReviewFilter = 'pending' | 'approved' | 'rejected' | 'all';
@@ -29,6 +30,12 @@ export function AiReviewView() {
   const [profileId, setProfileId] = useState<number | null>(null);
   const [sourceId, setSourceId] = useState<number | null>(null);
   const [minConfidence, setMinConfidence] = useState(0);
+  const [conflictsOnly, setConflictsOnly] = useState(false);
+  const [audit, setAudit] = useState<AiReviewAudit | null>(null);
+  const [quality, setQuality] = useState<AiQualityConfig>(EMPTY_QUALITY_CONFIG);
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [bulkConfirm, setBulkConfirm] = useState<'all' | 'clean' | null>(null);
+  const [bulkRunning, setBulkRunning] = useState(false);
   const [items, setItems] = useState<AiReviewItem[]>([]);
   const [total, setTotal] = useState(0);
   const [counts, setCounts] = useState<AiReviewCounts>({ pending: 0, approved: 0, rejected: 0 });
@@ -43,7 +50,7 @@ export function AiReviewView() {
     async (offset = 0, append = false) => {
       setLoading(true);
       try {
-        const [page, nextCounts] = await Promise.all([
+        const [page, nextCounts, nextAudit] = await Promise.all([
           api.ai.review.list({
             status,
             search: search.trim() || undefined,
@@ -51,21 +58,30 @@ export function AiReviewView() {
             sourceId: sourceId ?? undefined,
             videoId: aiReviewVideoId ?? undefined,
             minConfidence: minConfidence > 0 ? minConfidence : undefined,
+            conflicts: conflictsOnly ? 'any' : undefined,
             limit: 50,
             offset
           }),
-          api.ai.review.counts()
+          api.ai.review.counts(),
+          api.ai.review.audit({
+            status: 'pending',
+            profileId: profileId ?? undefined,
+            sourceId: sourceId ?? undefined,
+            search: search.trim() || undefined,
+            minConfidence: minConfidence > 0 ? minConfidence : undefined
+          })
         ]);
         setItems((current) => (append ? [...current, ...page.items] : page.items));
         setTotal(page.total);
         setCounts(nextCounts);
+        setAudit(nextAudit);
       } catch (error) {
         pushToast('error', (error as Error).message);
       } finally {
         setLoading(false);
       }
     },
-    [aiReviewVideoId, minConfidence, profileId, pushToast, search, sourceId, status]
+    [aiReviewVideoId, conflictsOnly, minConfidence, profileId, pushToast, search, sourceId, status]
   );
 
   useEffect(() => {
@@ -78,10 +94,11 @@ export function AiReviewView() {
   }, [load]);
 
   useEffect(() => {
-    void Promise.all([api.ai.profiles.list(), api.sources.list()])
-      .then(([nextProfiles, nextSources]) => {
+    void Promise.all([api.ai.profiles.list(), api.sources.list(), api.ai.qualityRules()])
+      .then(([nextProfiles, nextSources, nextQuality]) => {
         setProfiles(nextProfiles);
         setSources(nextSources);
+        setQuality(nextQuality);
       })
       .catch(() => undefined);
   }, []);
@@ -238,6 +255,40 @@ export function AiReviewView() {
     }
   };
 
+  // audit.issues 是按「规则」统计的，一条可能同时命中多条规则；
+  // 条目数只能用「总数 − 干净数」，把各规则相加会重复计数。
+  const conflictCount = audit ? Math.max(0, audit.runs - audit.cleanRuns) : 0;
+
+  /** 按当前筛选条件批量通过；onlyClean 时跳过有矛盾标签的条目 */
+  const runBulk = async (onlyClean: boolean) => {
+    setBulkRunning(true);
+    try {
+      const result = await api.ai.review.bulk({
+        action: 'approve',
+        onlyClean,
+        query: {
+          status: 'pending',
+          profileId: profileId ?? undefined,
+          sourceId: sourceId ?? undefined,
+          search: search.trim() || undefined,
+          minConfidence: minConfidence > 0 ? minConfidence : undefined,
+          conflicts: conflictsOnly ? 'any' : undefined
+        }
+      });
+      pushToast(
+        'success',
+        `已通过 ${result.tags} 个标签（${result.runs} 条）${result.skipped > 0 ? `，跳过 ${result.skipped} 条有冲突的` : ''}`
+      );
+      setBulkConfirm(null);
+      setSelected(new Set());
+      await load(0, false);
+    } catch (error) {
+      pushToast('error', (error as Error).message);
+    } finally {
+      setBulkRunning(false);
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-line2 bg-panel/30 px-4 py-2">
@@ -322,6 +373,59 @@ export function AiReviewView() {
           ) : null}
 
           <div className="ml-auto flex items-center gap-1.5">
+            {audit && audit.runs > 0 ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-[10.5px]"
+                  onClick={() => setBulkConfirm('clean')}
+                  disabled={bulkRunning || audit.cleanRuns === 0}
+                  title="通过没有矛盾标签的条目，有冲突的留给你人工看"
+                >
+                  <ShieldCheck size={10} />
+                  智能通过 {audit.cleanRuns}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-6 px-2 text-[10.5px]"
+                  onClick={() => setBulkConfirm('all')}
+                  disabled={bulkRunning || audit.runs === 0}
+                  title="通过当前筛选命中的全部条目（含存在冲突的）"
+                >
+                  <Check size={10} />
+                  全部通过 {audit.runs}
+                </Button>
+                <button
+                  type="button"
+                  onClick={() => setAuditOpen(true)}
+                  className={clsx(
+                    'inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10.5px] transition-colors',
+                    conflictCount > 0
+                      ? 'border-red/40 bg-red/10 text-red hover:bg-red/15'
+                      : 'border-line text-dim hover:text-fg'
+                  )}
+                  title="检查标签质量：同一套造型内互斥、同分类多个取值、低置信度"
+                >
+                  <AlertTriangle size={10} />
+                  质量检查{conflictCount > 0 ? ` ${conflictCount}` : ''}
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => setConflictsOnly((value) => !value)}
+              className={clsx(
+                'rounded border px-1.5 py-0.5 text-[10.5px] transition-colors',
+                conflictsOnly
+                  ? 'border-red/40 bg-red/10 text-red'
+                  : 'border-line text-dim hover:text-fg'
+              )}
+              title="只显示存在矛盾标签的条目"
+            >
+              仅有冲突
+            </button>
             <button
               type="button"
               onClick={() => setSelected(new Set(items.map((item) => item.runId)))}
@@ -423,6 +527,7 @@ export function AiReviewView() {
                       item={item}
                       selected={selected.has(item.runId)}
                       busy={busy}
+                      quality={quality}
                       defaultMinConfidence={minConfidence || 0.5}
                       onToggleRow={() => toggleRow(item.runId)}
                       onApprove={(tagIds) => void approve(item, tagIds)}
@@ -453,6 +558,123 @@ export function AiReviewView() {
           </>
         )}
       </div>
+
+      {auditOpen && audit ? (
+        <Modal
+          title="标签质量检查"
+          subtitle="规则来自素材库的 ai-quality.json；只做提示，不会自动改标签"
+          onClose={() => setAuditOpen(false)}
+          width="max-w-lg"
+        >
+          <div className="space-y-3">
+            <div className="rounded-lg border border-line bg-panel2/60 px-3 py-2.5 text-[11.5px] text-muted">
+              当前筛选命中 <span className="font-mono text-fg">{audit.runs}</span> 条 ·{' '}
+              <span className="font-mono text-fg">{audit.pendingTags}</span> 个待审标签 · 无冲突{' '}
+              <span className="font-mono text-green">{audit.cleanRuns}</span> 条
+            </div>
+            <p className="text-[10.5px] leading-4 text-dim">
+              换装视频同一条里可能有多套造型：这些规则只做提示，不会自动改标签，由你决定保留哪一方。
+            </p>
+            {quality.rules.length === 0 ? (
+              <p className="rounded border border-line2/60 px-2.5 py-2 text-[11px] leading-5 text-dim">
+                还没有配置质量规则：在素材库根目录放一个 <code className="text-fg">ai-quality.json</code> 即可（格式见
+                docs/ai-tagging.md）。现在只检测低置信度。
+              </p>
+            ) : null}
+            <ul className="space-y-1.5">
+              {[...quality.rules.map((rule) => rule.kind), LOW_CONFIDENCE_KIND].map((kind) => {
+                const count = audit.issues[kind] ?? 0;
+                return (
+                  <li
+                    key={kind}
+                    className="flex items-center justify-between gap-2 rounded border border-line2/60 px-2.5 py-1.5 text-[11.5px]"
+                  >
+                    <span className={count > 0 ? 'text-fg' : 'text-dim'}>{issueLabel(kind, quality)}</span>
+                    <span
+                      className={clsx(
+                        'font-mono text-[11px]',
+                        count > 0 ? (kind === LOW_CONFIDENCE_KIND ? 'text-yellow' : 'text-red') : 'text-dim'
+                      )}
+                    >
+                      {count}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <Button variant="ghost" size="sm" onClick={() => setAuditOpen(false)}>
+                关闭
+              </Button>
+              <Button
+                variant="subtle"
+                size="sm"
+                onClick={() => {
+                  setConflictsOnly(true);
+                  setAuditOpen(false);
+                }}
+                disabled={conflictCount === 0}
+              >
+                只看有冲突的
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  setAuditOpen(false);
+                  setBulkConfirm('clean');
+                }}
+                disabled={audit.cleanRuns === 0}
+              >
+                通过无冲突的 {audit.cleanRuns} 条
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {bulkConfirm ? (
+        <Modal
+          title={bulkConfirm === 'clean' ? '通过无冲突条目' : '通过全部条目'}
+          subtitle="通过后标签会进入素材库「本地标签」，不可一键撤销（可逐条取消）"
+          onClose={() => {
+            if (!bulkRunning) setBulkConfirm(null);
+          }}
+          width="max-w-md"
+        >
+          <div className="space-y-4">
+            <p className="text-[12px] leading-5 text-muted">
+              {bulkConfirm === 'clean'
+                ? `将通过与当前筛选一致、且没有矛盾标签的 ${audit?.cleanRuns ?? 0} 条打标结果。`
+                : `将通过当前筛选命中的全部 ${audit?.runs ?? 0} 条打标结果（含存在矛盾的条目）。`}
+            </p>
+            {bulkConfirm === 'all' && conflictCount > 0 ? (
+              <p className="rounded border border-yellow/30 bg-yellow/10 px-2.5 py-1.5 text-[11px] leading-5 text-yellow">
+                其中有 {conflictCount} 条命中了你配置的质量规则（同一套造型内互斥 / 同分类多个取值）。
+              </p>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setBulkConfirm(null)}
+                disabled={bulkRunning}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => void runBulk(bulkConfirm === 'clean')}
+                disabled={bulkRunning}
+              >
+                {bulkRunning ? <Spinner className="h-3 w-3" /> : <Check size={12} />}
+                确认通过
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }

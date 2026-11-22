@@ -14,6 +14,59 @@ import { api } from '../../lib/bridge';
 import { useUi } from '../../lib/store';
 import { Button, Field, Modal, Select, TextArea, TextInput, Toggle } from '../ui';
 
+function splitTags(text: string): string[] {
+  return Array.from(
+    new Set(
+      text
+        .split(/[、,，\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+/**
+ * 示例标签/停用词原来是单行输入框：只能看到一截，而且每次 onChange 就地 split，
+ * 打「、」的瞬间就被当成分隔符吃掉，第二个标签会和前一个粘在一起。改成多行文本、失焦再解析。
+ */
+function TagListField({
+  value,
+  onChange,
+  placeholder
+}: {
+  value: string[];
+  onChange: (tags: string[]) => void;
+  placeholder?: string;
+}) {
+  const joined = value.join('、');
+  const [text, setText] = useState(joined);
+  const [committed, setCommitted] = useState(joined);
+  // 外部（切换方案 / 其它入口）改了值时才重置草稿，避免打字过程中被覆盖
+  if (joined !== committed) {
+    setCommitted(joined);
+    setText(joined);
+  }
+  const rows = Math.min(10, Math.max(2, Math.ceil(text.length / 34)));
+  return (
+    <div className="mt-1">
+      <TextArea
+        value={text}
+        rows={rows}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => {
+          const tags = splitTags(text);
+          onChange(tags);
+          setText(tags.join('、'));
+        }}
+        className="min-h-0 py-1.5 text-[11px] leading-5"
+        placeholder={placeholder}
+        spellCheck={false}
+      />
+      <div className="mt-0.5 text-[10px] text-dim">{value.length} 个 · 用、或逗号分隔</div>
+    </div>
+  );
+}
+
 function newProfile(): AiTagProfileInput {
   return {
     name: '新方案',
@@ -36,7 +89,8 @@ function newProfile(): AiTagProfileInput {
     minConfidence: DEFAULT_MIN_CONFIDENCE,
     language: 'zh-CN',
     useAcrcloud: true,
-    useBilibiliTags: true
+    useBilibiliTags: true,
+    allowExtraTags: false
   };
 }
 
@@ -63,7 +117,8 @@ function fromProfile(profile: AiTagProfile): AiTagProfileInput {
     minConfidence: profile.minConfidence,
     language: profile.language,
     useAcrcloud: profile.useAcrcloud,
-    useBilibiliTags: profile.useBilibiliTags
+    useBilibiliTags: profile.useBilibiliTags,
+    allowExtraTags: profile.allowExtraTags
   };
 }
 
@@ -230,8 +285,8 @@ export function AiProfileView() {
       duration: '3:24',
       sourceName: '示例收藏夹',
       description: '示例简介',
-      originalTags: '舞蹈、宅舞、音乐',
-      bgmHint: '命中音乐线索：舞蹈、音乐。建议调用 identify_music 确认 BGM。',
+      originalTags: '示例标签甲、示例标签乙',
+      bgmHint: '命中音乐线索：示例关键词。建议调用 identify_music 确认 BGM。',
       focus: draft.focus.join('、') || '无',
       taxonomy: draft.taxonomy.categories
         .map(
@@ -477,44 +532,38 @@ export function AiProfileView() {
                             <Trash2 size={11} />
                           </button>
                         </div>
-                        <TextInput
-                          value={(category.examples ?? []).join('、')}
-                          onChange={(event) => {
+                        <TagListField
+                          value={category.examples ?? []}
+                          onChange={(examples) => {
                             const categories = [...draft.taxonomy.categories];
-                            categories[index] = {
-                              ...category,
-                              examples: event.target.value
-                                .split(/[、,，]/)
-                                .map((item) => item.trim())
-                                .filter(Boolean)
-                            };
+                            categories[index] = { ...category, examples };
                             update({ taxonomy: { ...draft.taxonomy, categories } });
                           }}
-                          className="mt-1 h-7 text-[11px]"
-                          placeholder="示例标签，用、分隔"
+                          placeholder="示例标签，用、或逗号分隔"
                         />
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <Field label="停用词" hint="用、或逗号分隔；命中这些词的标签会被丢弃。">
-                  <TextInput
-                    value={draft.taxonomy.stopwords.join('、')}
-                    onChange={(event) =>
-                      update({
-                        taxonomy: {
-                          ...draft.taxonomy,
-                          stopwords: event.target.value
-                            .split(/[、,，]/)
-                            .map((item) => item.trim())
-                            .filter(Boolean)
-                        }
-                      })
+                <Field label="停用词" hint="命中这些词的标签会被丢弃。">
+                  <TagListField
+                    value={draft.taxonomy.stopwords}
+                    onChange={(stopwords) =>
+                      update({ taxonomy: { ...draft.taxonomy, stopwords } })
                     }
                     placeholder="视频、B站、二次元…"
                   />
                 </Field>
+
+                <div className="rounded-lg border border-line/70 bg-panel2/40 px-3 py-2">
+                  <Toggle
+                    checked={draft.allowExtraTags === true}
+                    onChange={(next) => update({ allowExtraTags: next })}
+                    label="允许方案外标签"
+                    hint="关闭时只保留分类体系里列出的标签（曲名仍记录在 BGM 字段）；打开后模型可以自由造词，容易产生近义重复。"
+                  />
+                </div>
               </div>
               <div className="space-y-3">
                 <div className="grid gap-3">

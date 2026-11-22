@@ -59,6 +59,8 @@ export function defaultSettings(): AppSettings {
     closeToTray: true,
     ytdlpPath: '',
     ffmpegPath: '',
+    downloadProxy: 'direct',
+    downloadAutoRetry: 2,
     requestDelayMs: 600,
     aiFrameCount: 3,
     aiFrameWidth: 768,
@@ -67,6 +69,7 @@ export function defaultSettings(): AppSettings {
     aiRequestDelayMs: 300,
     aiTimeoutMs: 120000,
     aiMaxRetries: 2,
+    aiAutoRetry: 2,
     aiMaxToolRounds: 3,
     aiCacheDays: 30
   };
@@ -136,12 +139,18 @@ function sanitize(input: AppSettings): AppSettings {
   const aiMaxRetries = Number.isFinite(input.aiMaxRetries)
     ? Math.min(5, Math.max(0, Math.round(input.aiMaxRetries)))
     : 2;
+  const aiAutoRetry = Number.isFinite(input.aiAutoRetry)
+    ? Math.min(5, Math.max(0, Math.round(input.aiAutoRetry)))
+    : 2;
   const aiMaxToolRounds = Number.isFinite(input.aiMaxToolRounds)
     ? Math.min(5, Math.max(0, Math.round(input.aiMaxToolRounds)))
     : 3;
   const aiCacheDays = Number.isFinite(input.aiCacheDays)
     ? Math.min(365, Math.max(1, Math.round(input.aiCacheDays)))
     : 30;
+  const downloadAutoRetry = Number.isFinite(input.downloadAutoRetry)
+    ? Math.min(5, Math.max(0, Math.round(input.downloadAutoRetry)))
+    : 2;
   return {
     libraryRoot: String(input.libraryRoot || defaultLibraryRoot()).trim(),
     defaultQuality: qualities.includes(input.defaultQuality) ? input.defaultQuality : 'compat',
@@ -165,6 +174,8 @@ function sanitize(input: AppSettings): AppSettings {
     closeToTray: input.closeToTray !== false,
     ytdlpPath: String(input.ytdlpPath || '').trim(),
     ffmpegPath: String(input.ffmpegPath || '').trim(),
+    downloadProxy: input.downloadProxy === 'system' ? 'system' : 'direct',
+    downloadAutoRetry,
     requestDelayMs: delay,
     aiFrameCount,
     aiFrameWidth,
@@ -173,6 +184,7 @@ function sanitize(input: AppSettings): AppSettings {
     aiRequestDelayMs,
     aiTimeoutMs,
     aiMaxRetries,
+    aiAutoRetry,
     aiMaxToolRounds,
     aiCacheDays
   };
